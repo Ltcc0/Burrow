@@ -641,7 +641,7 @@ final class SoftwareModel: ObservableObject {
         alert.alertStyle = .warning
         alert.addButton(withTitle: NSLocalizedString("Move to Trash", comment: ""))
         alert.addButton(withTitle: NSLocalizedString("Cancel", comment: ""))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModalQuiet() == .alertFirstButtonReturn else { return }
 
         if !subsetApps.isEmpty { trashSubsets(subsetApps) }
         if !engineApps.isEmpty { engineUninstall(engineApps) }
@@ -732,7 +732,7 @@ final class SoftwareModel: ObservableObject {
                         problem)
                     alert.alertStyle = .warning
                     alert.addButton(withTitle: NSLocalizedString("OK", comment: ""))
-                    alert.runModal()
+                    alert.runModalQuiet()
                 }
                 return
             }

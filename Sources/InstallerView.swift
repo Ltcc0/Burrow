@@ -351,7 +351,7 @@ struct MoInteractiveView: View {
         alert.alertStyle = .warning
         alert.addButton(withTitle: NSLocalizedString("Remove", comment: "destructive confirm button"))
         alert.addButton(withTitle: NSLocalizedString("Cancel", comment: ""))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModalQuiet() == .alertFirstButtonReturn else { return }
         runner.confirm(selected)
     }
 

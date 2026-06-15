@@ -178,7 +178,7 @@ enum UpdateCheck {
             alert.addButton(withTitle: NSLocalizedString("Close", comment: ""))
         }
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn, let link {
+        if alert.runModalQuiet() == .alertFirstButtonReturn, let link {
             NSWorkspace.shared.open(link)
         }
     }

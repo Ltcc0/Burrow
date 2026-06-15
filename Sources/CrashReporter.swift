@@ -19,12 +19,26 @@
 //
 
 import Foundation
+import AppKit
 import Sentry
 
 enum CrashReporter {
 
     /// Whether the SDK is currently running (started and not closed).
     private static var running = false
+
+    /// Run a synchronous, USER-PACED block (a modal confirm, an auth prompt)
+    /// without Sentry's app-hang monitor flagging the expected main-thread
+    /// block as an ANR. A person reading an NSAlert for >2 s is not a defect —
+    /// the genuine render-path hangs we care about don't go through here. No-op
+    /// when the SDK isn't running (dev builds / opted out).
+    @discardableResult
+    static func withoutAppHangTracking<T>(_ body: () -> T) -> T {
+        guard running else { return body() }
+        SentrySDK.pauseAppHangTracking()
+        defer { SentrySDK.resumeAppHangTracking() }
+        return body()
+    }
 
     private static var dsn: String {
         (Bundle.main.infoDictionary?["SentryDSN"] as? String) ?? ""
@@ -107,5 +121,16 @@ enum CrashReporter {
                 frame.fileName = redact(frame.fileName)
             }
         }
+    }
+}
+
+extension NSAlert {
+    /// `runModal()` that pauses Sentry app-hang tracking for the duration —
+    /// a user deciding at a confirm dialog blocks the main thread by design
+    /// and must not be reported as an ANR (the cause of the modal-class
+    /// "App Hanging" Sentry issues, e.g. the Touch ID toggle confirm).
+    @discardableResult
+    func runModalQuiet() -> NSApplication.ModalResponse {
+        CrashReporter.withoutAppHangTracking { runModal() }
     }
 }

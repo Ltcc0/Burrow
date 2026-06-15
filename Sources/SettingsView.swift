@@ -541,7 +541,7 @@ struct SettingsView: View {
                     ? "Now on \(moleVersion)."
                     : (res?.stderr.isEmpty == false ? String(res!.stderr.prefix(300))
                                                     : "`mo update` exited non-zero. Try running it in a terminal.")
-                alert.runModal()
+                alert.runModalQuiet()
             }
         }
     }
@@ -589,7 +589,7 @@ struct SettingsView: View {
                     let alert = NSAlert()
                     alert.messageText = NSLocalizedString("Couldn't update Touch ID for sudo", comment: "")
                     alert.informativeText = String(format: NSLocalizedString("`mo touchid %@` didn't complete (the password prompt may have been cancelled). You can also run it in a terminal.", comment: ""), cmd)
-                    alert.runModal()
+                    alert.runModalQuiet()
                 }
             }
         }
@@ -603,7 +603,7 @@ struct SettingsView: View {
         alert.informativeText = NSLocalizedString("Burrow needs to relaunch to apply the new language.", comment: "")
         alert.addButton(withTitle: NSLocalizedString("Relaunch Now", comment: ""))
         alert.addButton(withTitle: NSLocalizedString("Later", comment: ""))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModalQuiet() == .alertFirstButtonReturn else { return }
         let config = NSWorkspace.OpenConfiguration()
         config.createsNewApplicationInstance = true
         NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in }

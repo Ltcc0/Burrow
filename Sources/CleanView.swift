@@ -225,7 +225,7 @@ struct CleanView: View {
             alert.informativeText = NSLocalizedString("The scan is more than a few minutes old — caches that appeared since wouldn't have been reviewed. Rescan to get current numbers, then clean.", comment: "")
             alert.addButton(withTitle: NSLocalizedString("Rescan", comment: ""))
             alert.addButton(withTitle: NSLocalizedString("Cancel", comment: ""))
-            if alert.runModal() == .alertFirstButtonReturn { screen = .hero; startDry() }
+            if alert.runModalQuiet() == .alertFirstButtonReturn { screen = .hero; startDry() }
             return
         }
         if Store.cacheRemovalMode == .trash {
@@ -253,7 +253,7 @@ struct CleanView: View {
             alert.messageText = NSLocalizedString("Couldn't protect deselected items", comment: "")
             alert.informativeText = String(format: NSLocalizedString("Writing the whitelist failed (%@), so the engine would clean everything it found. Nothing was cleaned.", comment: ""), error.localizedDescription)
             alert.alertStyle = .warning
-            alert.runModal()
+            alert.runModalQuiet()
             return
         }
         screen = .hero
@@ -287,7 +287,7 @@ struct CleanView: View {
         alert.alertStyle = .warning
         alert.addButton(withTitle: NSLocalizedString("Clean", comment: ""))
         alert.addButton(withTitle: NSLocalizedString("Cancel", comment: ""))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModalQuiet() == .alertFirstButtonReturn else { return }
         screen = .hero
         realFlow.start(.moleStream(["clean"], elevated: true,
                                    label: NSLocalizedString("Cleaning caches", comment: ""),
@@ -312,7 +312,7 @@ struct CleanView: View {
         alert.informativeText = NSLocalizedString("They stay recoverable until you empty the Trash. Space frees when it empties; this run won't appear in `mo history`.", comment: "")
         alert.addButton(withTitle: NSLocalizedString("Move to Trash", comment: ""))
         alert.addButton(withTitle: NSLocalizedString("Cancel", comment: ""))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModalQuiet() == .alertFirstButtonReturn else { return }
 
         screen = .hero
         let opID = UUID()

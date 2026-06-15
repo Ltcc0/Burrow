@@ -122,7 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alert.informativeText = String(format: NSLocalizedString("%@\n\nThe app will quit.", comment: ""),
                                            error.localizedDescription)
             alert.alertStyle = .critical
-            alert.runModal()
+            alert.runModalQuiet()
             NSApp.terminate(nil)
             return
         }

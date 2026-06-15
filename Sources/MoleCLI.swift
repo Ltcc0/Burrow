@@ -172,7 +172,7 @@ enum MoleCLI {
             """, comment: "")
         alert.alertStyle = .critical
         alert.addButton(withTitle: NSLocalizedString("Quit", comment: ""))
-        _ = alert.runModal()
+        _ = alert.runModalQuiet()
     }
 
     /// Result of a subprocess invocation. `exitCode == 0` is the success

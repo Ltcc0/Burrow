@@ -394,7 +394,7 @@ final class AnalyzeModel: ObservableObject {
         alert.alertStyle = .warning
         alert.addButton(withTitle: NSLocalizedString("Move to Trash", comment: ""))
         alert.addButton(withTitle: NSLocalizedString("Cancel", comment: ""))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModalQuiet() == .alertFirstButtonReturn else { return }
 
         do {
             try FileManager.default.trashItem(at: URL(fileURLWithPath: e.path), resultingItemURL: nil)
@@ -406,7 +406,7 @@ final class AnalyzeModel: ObservableObject {
             err.messageText = NSLocalizedString("Couldn't move to Trash", comment: "")
             err.informativeText = error.localizedDescription
             err.alertStyle = .warning
-            err.runModal()
+            err.runModalQuiet()
         }
     }
 

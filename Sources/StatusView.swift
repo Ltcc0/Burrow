@@ -669,7 +669,7 @@ struct ProcRow: View {
         alert.alertStyle = .warning
         alert.addButton(withTitle: force ? NSLocalizedString("Force Kill", comment: "") : NSLocalizedString("Quit Process", comment: ""))
         alert.addButton(withTitle: NSLocalizedString("Cancel", comment: ""))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModalQuiet() == .alertFirstButtonReturn else { return }
         if force { ProcessActions.forceKill(pid: p.pid) } else { ProcessActions.quit(pid: p.pid) }
     }
 
