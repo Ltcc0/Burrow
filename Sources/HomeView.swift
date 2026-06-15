@@ -30,7 +30,6 @@ struct HomeView: View {
 
     @State private var section: Section = .overview
     @State private var showExplain = false
-    @State private var showTuneUp = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,23 +50,8 @@ struct HomeView: View {
         HStack(spacing: 12) {
             segmented
             Spacer()
-            tuneUpButton
             if Store.aiEnabled { explainButton }
         }
-        .sheet(isPresented: $showTuneUp) {
-            TuneUpView(onClose: { showTuneUp = false })
-        }
-    }
-
-    private var tuneUpButton: some View {
-        Button { showTuneUp = true } label: {
-            Label(NSLocalizedString("Tune-Up", comment: ""), systemImage: "wand.and.stars")
-                .font(Brand.mono(11, .semibold)).foregroundStyle(Tool.optimize.accent)
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(Capsule().fill(Tool.optimize.accent.opacity(0.12)))
-                .overlay(Capsule().strokeBorder(Tool.optimize.accent.opacity(0.30), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
     }
 
     private var segmented: some View {
