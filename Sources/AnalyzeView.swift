@@ -481,37 +481,66 @@ final class AnalyzeModel: ObservableObject {
         cacheChild: @escaping (String, DiskScanResult) -> Void
     ) throws -> DiskScanResult {
         let fm = FileManager.default
+        // The per-child walk is what emits "● <child> · k/N" progress, so it
+        // must also run for Home (which carries dozens of entries once dotfiles
+        // are counted) — the old `<= 40` cap silently fell back to mole's one
+        // aggregate call there, leaving the first scan on a static line. We
+        // raise the ceiling to a Home-sized bound and run the children with
+        // bounded concurrency, so wall-clock stays near the aggregate scan
+        // instead of N sequential `mo analyze` spawns. Pathologically bushy
+        // targets (drilling into a node_modules) still fall back rather than
+        // spawning hundreds of processes.
         guard let childNames = try? fm.contentsOfDirectory(atPath: path),
-              childNames.count > 0, childNames.count <= 40 else {
+              childNames.count > 0, childNames.count <= 200 else {
             return try DiskScanner.scan(path)
         }
 
+        let total = childNames.count
+        let lock = NSLock()
         var entries: [DiskScanEntry] = []
         var totalSize: Int64 = 0
-        for (index, name) in childNames.enumerated() {
-            let childPath = (path as NSString).appendingPathComponent(name)
-            onProgress(childPath, index + 1, childNames.count)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: childPath, isDirectory: &isDir) else { continue }
-            if isDir.boolValue {
-                // A child mole can't read (permissions) still gets a row —
-                // size 0 — instead of sinking the whole scan.
-                let result = try? DiskScanner.scan(childPath)
-                let size = result.map { $0.totalSize > 0 ? $0.totalSize : $0.entries.reduce(0) { $0 + $1.size } } ?? 0
-                if let result { cacheChild(childPath, result) }
-                entries.append(DiskScanEntry(id: childPath, name: name, path: childPath,
-                                             size: size, isDir: true, lastAccess: nil))
-                totalSize += size
-            } else {
-                let attrs = try? fm.attributesOfItem(atPath: childPath)
-                let size = (attrs?[.size] as? Int64) ?? Int64((attrs?[.size] as? Int) ?? 0)
-                entries.append(DiskScanEntry(id: childPath, name: name, path: childPath,
-                                             size: size, isDir: false, lastAccess: nil))
-                totalSize += size
+        var done = 0
+
+        let inFlight = DispatchSemaphore(value: 6)   // bound concurrent `mo analyze`
+        let group = DispatchGroup()
+        let workQ = DispatchQueue.global(qos: .userInitiated)
+
+        for name in childNames {
+            inFlight.wait()
+            group.enter()
+            workQ.async {
+                defer { inFlight.signal(); group.leave() }
+                let childPath = (path as NSString).appendingPathComponent(name)
+                var entry: DiskScanEntry?
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: childPath, isDirectory: &isDir) {
+                    if isDir.boolValue {
+                        // A child mole can't read (permissions) still gets a row
+                        // — size 0 — instead of sinking the whole scan.
+                        let result = try? DiskScanner.scan(childPath)
+                        let size = result.map { $0.totalSize > 0 ? $0.totalSize : $0.entries.reduce(0) { $0 + $1.size } } ?? 0
+                        if let result { cacheChild(childPath, result) }
+                        entry = DiskScanEntry(id: childPath, name: name, path: childPath,
+                                              size: size, isDir: true, lastAccess: nil)
+                    } else {
+                        let attrs = try? fm.attributesOfItem(atPath: childPath)
+                        let size = (attrs?[.size] as? Int64) ?? Int64((attrs?[.size] as? Int) ?? 0)
+                        entry = DiskScanEntry(id: childPath, name: name, path: childPath,
+                                              size: size, isDir: false, lastAccess: nil)
+                    }
+                }
+                lock.lock()
+                if let entry { entries.append(entry); totalSize += entry.size }
+                done += 1
+                let d = done
+                lock.unlock()
+                onProgress(childPath, d, total)
             }
         }
+        group.wait()
+
         entries.sort { $0.size > $1.size }
         return DiskScanResult(path: path, totalSize: totalSize,
-                              totalFiles: childNames.count, entries: entries, scannedAt: Date())
+                              totalFiles: total, entries: entries, scannedAt: Date())
     }
 }
