@@ -1,34 +1,43 @@
-# Burrow 0.7.1
+# Burrow 0.7.2
 
-A stability release. The 0.7.0 redesign shipped with a handful of freezes — and
-one crash — that telemetry caught in the first day. This clears every app-hang
-and the crash reported since launch, plus two long-standing freezes that predate
-the redesign. No new features; just the redesign, holding still.
+A feature release on top of the 0.7.0 redesign: cleanup, software management, and
+the live dashboard all get more capable, with a couple of opt-in surfaces and a
+quieter crash reporter. Everything stays local-first — no new always-on network.
 
-## Freezes & a crash, fixed
-- **History view no longer locks up.** Opening a wide time range (up to 90 days)
-  could freeze the app for a couple of seconds while the bar charts laid out —
-  the worst regression from the redesign. Charts now down-sample cleanly and stay
-  responsive. *(#57)*
-- **Faster launch, no hang.** Startup no longer blocks the main thread while it
-  looks for the `mo` engine — the lookup moved off-thread. (This one predates
-  0.7.0 and has been one of the most common freezes in the wild.) *(#72)*
-- **Fixed a crash opening the menu-bar popover.** The mini charts in the popover
-  and the Status tiles could segfault during a transition; they now draw as a
-  single shape, the same way the History charts do. *(#75)*
-- **Smooth typing in Uninstall & Purge.** Keystrokes sent to the interactive `mo`
-  sessions no longer risk parking the UI when the engine's output backs up. *(#73)*
-- **Steadier process list.** The per-row Quit / Force-Kill menu in Status no
-  longer rebuilds its labels on every two-second refresh. *(#74)*
+## Cleanup
+- **Purge and Installers fold into Clean.** One Clean tab now offers three
+  category cards — system & app caches, project build artifacts, and leftover
+  installers — instead of three separate tabs. Same engines, fewer pills.
+- **Real result screens everywhere.** Every run now leads with the structured
+  summary and tucks the raw terminal output behind a collapsed "View Log."
+  Purge and Installers get a proper done screen instead of a wall of text.
 
-## Charts & metrics
-- **GPU history bars draw again** on Apple Silicon (they'd been reading as a flat
-  zero).
+## Software
+- **Homebrew updates show up on their own.** Open Apps → Updates and your
+  outdated `brew` packages are already listed — no "Check for updates" click.
+  (Live App Store / Sparkle version checks still wait for the button, so the
+  app keeps its "no silent network" promise.)
+- **Startup items you can actually toggle.** Your own login agents now have an
+  on/off switch right in the list; system- and app-managed items stay
+  review-only, as macOS requires.
 
-## Under the hood
-- **One refresh pump for live metrics.** The HUD, Status, and Activity panels now
-  share a single refresh source instead of each spinning its own timer — less
-  churn and fewer redundant `mo` calls. *(#53)*
-- **One audited engine path.** Every `mo` call — snapshot, streaming, the
-  interactive PTY sessions, and privileged operations — now flows through a single
-  facade, which makes future privileged-operation work safer to build on. *(#48)*
+## Status & dashboard
+- **Network charts read at a glance.** Both the Status tile and the History
+  chart now draw download and upload as two separate lines — green down, blue
+  up — instead of one combined trace.
+- **Analyze feels alive.** The first scan of your home folder shows live
+  per-folder progress ("● ~/Downloads · 3/12") instead of a static "Measuring…".
+- **Optional camera/mic indicator.** The menu-bar popover can show when your
+  camera or microphone is in use (off by default — turn it on in
+  Settings → Menu bar). It reads the same system signal as Control Center.
+
+## Staying current
+- **Burrow checks itself for updates.** On by default (once a day, one
+  lightweight request), it shows a banner and a menu-bar dot when a new version
+  is out — and never installs anything on its own. "Check for Updates" and
+  "About Burrow" now live in Settings too. You can turn the auto-check off.
+
+## Fewer false alarms
+- **Confirm dialogs are no longer reported as freezes.** Pausing at a
+  confirmation or the Touch ID prompt blocks the main thread by design; the
+  crash reporter no longer mistakes that for an app hang.
