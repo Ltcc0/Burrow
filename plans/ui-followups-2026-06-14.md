@@ -65,20 +65,20 @@ wins, and stays feature-flagged off until signing is sorted.
       in-window banner + menu-bar dot; Settings About auto-check toggle + Check/About buttons;
       SECURITY.md documents the GitHub egress.
 
-### PR-D · Camera/mic privacy indicators (opt-in)
-- [ ] New `CameraMicSensor` (CoreMediaIO `DeviceIsRunningSomewhere` + CoreAudio equivalent,
-      passive reads, no TCC). `Store.cameraMicIndicatorEnabled` (default false). Popover
-      utility-strip row, only-when-active. Honest "in use" label (no fake attribution).
+### PR-D · Camera/mic privacy indicators (opt-in)  ✅ DONE (`b35b258`)
+- [x] `CameraMicSensor` (CoreMediaIO/CoreAudio `DeviceIsRunningSomewhere`, passive, no TCC);
+      `Store.cameraMicIndicatorEnabled` (default false); popover only-when-active "in use"
+      chip; honest neutral label; Settings → Menu bar toggle.
 
-### PR-E · Tune-Up run-all (safe subset of decision 4)
-- [ ] `TuneUpView` + `TuneUpRunner` sequencing existing `OperationFlow`s (Clean + Optimize,
-      conservative default, per-step opt-out, visible pre-run plan, expanding section cards →
-      done summary). Entry point: Home action (not a new tinted Tool pane). N honest auth
-      prompts for now (helper pools them later).
+### PR-E · Tune-Up run-all (safe subset of decision 4)  ✅ DONE (`47ec979`)
+- [x] `TuneUpRunner` + `TuneUpView` sequencing existing `OperationFlow`s (Clean + Optimize),
+      conservative default, per-step opt-out, pre-run plan, status cards → done summary.
+      Entry: Home "Tune-Up" button (sheet). N honest auth prompts (pooling waits on helper).
 
-### PR-F · Startup user-level disable (safe subset of decision 4)
-- [ ] User-scope agent toggles (controllable = `scope==.user && !bundledInApp`): disable via
-      `launchctl bootout gui/$UID + disable` (reversible). System/bundled stay read-only.
+### PR-F · Startup user-level disable (safe subset of decision 4)  ✅ DONE (`6ee0da4`)
+- [x] `controllable` = user-scope, non-bundled, healthy; real Toggle via `StartupControl`
+      (launchctl bootout/disable + enable/bootstrap in gui/$UID, reversible, no admin);
+      disabled state read from `print-disabled`. System/bundled stay review-only.
 
 ### PR-G · Privileged helper (decision 4 "do it all") — BACKLOGGED 2026-06-14
 > User decision 2026-06-14: backlog the privileged-helper track entirely; ship only the
