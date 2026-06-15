@@ -60,6 +60,7 @@ struct PopupView: View {
         .task { await model.subscribeSnapshot() }
         .task { await model.subscribeSparklines() }
         .task { await model.subscribeCleanWatch() }
+        .task { await model.subscribePrivacy() }
     }
 
     // MARK: Header — health glyph + score + headline issue + free space
@@ -485,7 +486,23 @@ struct PopupView: View {
                 }
             }
             Spacer()
+            if model.cameraActive || model.micActive { privacyIndicator }
         }
+    }
+
+    /// Only-when-active camera/mic in-use chip (opt-in). Neutral "in use"
+    /// label — matches the OS amber-dot semantics, no per-app attribution.
+    private var privacyIndicator: some View {
+        HStack(spacing: 5) {
+            if model.cameraActive { Image(systemName: "video.fill").font(.system(size: 10)) }
+            if model.micActive { Image(systemName: "mic.fill").font(.system(size: 10)) }
+            Text("in use").font(Brand.mono(10, .medium))
+        }
+        .foregroundStyle(Brand.red)
+        .padding(.horizontal, 9).padding(.vertical, 5)
+        .background(Capsule().fill(Brand.red.opacity(0.14)))
+        .help(NSLocalizedString("Camera or microphone is in use by some app", comment: ""))
+        .accessibilityLabel(NSLocalizedString("Camera or microphone in use", comment: ""))
     }
 
     private func utilityButton(glyph: String, label: String, active: Bool, action: @escaping () -> Void) -> some View {
@@ -584,6 +601,9 @@ final class HUDModel: ObservableObject {
     /// Lifetime cleanup totals from `mo history`; nil = not loaded or
     /// engine has no history command.
     @Published var cleanWatch: CleanWatch.Totals?
+    /// Camera/mic in-use (opt-in indicator). False unless the toggle is on.
+    @Published var cameraActive = false
+    @Published var micActive = false
 
     private let db: DB
     private let live: LiveFeed
@@ -636,6 +656,20 @@ final class HUDModel: ObservableObject {
         }
         for await totals in feed.subscribeValues() {
             cleanWatch = totals
+        }
+    }
+
+    /// Camera/mic in-use poll (opt-in). Passive CoreMediaIO/CoreAudio reads
+    /// every ~1.5 s while the popover is open; no-op when the toggle is off.
+    func subscribePrivacy() async {
+        guard Store.cameraMicIndicatorEnabled else { return }
+        while !Task.isCancelled {
+            let state = await Task.detached(priority: .utility) {
+                (cam: CameraMicSensor.cameraInUse(), mic: CameraMicSensor.micInUse())
+            }.value
+            cameraActive = state.cam
+            micActive = state.mic
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
         }
     }
 

@@ -54,6 +54,7 @@ struct SettingsView: View {
     @State private var notifyOnCompletion: Bool = Store.notifyOnCompletion
     @State private var smartReminders: Bool = Store.smartRemindersEnabled
     @State private var autoCheckUpdates: Bool = Store.autoCheckForUpdates
+    @State private var cameraMicIndicator: Bool = Store.cameraMicIndicatorEnabled
 
     // Maintenance
     @State private var whitelistPatterns: [String] = []
@@ -384,6 +385,10 @@ struct SettingsView: View {
                     }
                 }
                 footnote("Metrics shows live CPU and memory next to the mark, refreshed with the sampler.")
+                toggleRow("Show camera & mic in-use indicator", isOn: $cameraMicIndicator) {
+                    Store.cameraMicIndicatorEnabled = $0
+                }
+                footnote("A small \u{201C}in use\u{201D} chip in the popover when the camera or microphone is active — the same system signal as Control Center, so it also lights for Siri, dictation and Continuity Camera. Off by default.")
             }
 
             section("Keyboard shortcuts", "keyboard") {

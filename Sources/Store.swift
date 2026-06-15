@@ -274,6 +274,15 @@ enum Store {
         set { d.set(newValue, forKey: "fda_notice_dismissed") }
     }
 
+    /// Whether the popover shows a camera/microphone in-use indicator.
+    /// Opt-in (off by default): detection is honest (system "in use" flag,
+    /// like Control Center) but lights for Siri/dictation/Continuity too, so
+    /// the user chooses to surface it.
+    static var cameraMicIndicatorEnabled: Bool {
+        get { d.object(forKey: "camera_mic_indicator_enabled") as? Bool ?? false }
+        set { write(newValue, "camera_mic_indicator_enabled") }
+    }
+
     // MARK: - Telemetry
 
     /// Anonymous usage + crash-reporting opt-in (active-day counts + app/OS/arch
