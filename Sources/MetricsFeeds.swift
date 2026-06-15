@@ -35,7 +35,9 @@ struct LiveSnapshot {
 struct MetricSparklines: Hashable {
     var cpu: [Double] = []
     var mem: [Double] = []
-    var net: [Double] = []
+    var net: [Double] = []          // combined rx+tx (popover / legacy)
+    var netRx: [Double] = []        // download, for the two-line net tile
+    var netTx: [Double] = []        // upload
     var gpu: [Double] = []
     /// RPM series — only the snapshots that reported fans (fanCount > 0)
     /// contribute, matching the tiles' "no placebo zeros" rule.
@@ -69,12 +71,17 @@ enum Sparklines {
     /// while the drain ranking still sees the whole window.
     static func from(_ statuses: [MoleStatus], tailPoints: Int = 30) -> MetricSparklines {
         var cpu: [Double] = [], mem: [Double] = [], net: [Double] = [], gpu: [Double] = []
+        var netRx: [Double] = [], netTx: [Double] = []
         var fan: [Double] = []
         var processLists: [[ProcessInfo]] = []
         for s in statuses {
             cpu.append(s.cpu.usage)
             mem.append(s.memory.usedPercent)
-            net.append(s.network.reduce(0.0) { $0 + $1.rxRateMbs + $1.txRateMbs })
+            let rx = s.network.reduce(0.0) { $0 + $1.rxRateMbs }
+            let tx = s.network.reduce(0.0) { $0 + $1.txRateMbs }
+            net.append(rx + tx)
+            netRx.append(rx)
+            netTx.append(tx)
             gpu.append(max(0, s.gpu?.first?.usage ?? 0))
             if let thermal = s.thermal, (thermal.fanCount ?? 0) > 0 {
                 fan.append(Double(thermal.fanSpeed))
@@ -87,6 +94,8 @@ enum Sparklines {
             cpu: Array(cpu.suffix(tailPoints)),
             mem: Array(mem.suffix(tailPoints)),
             net: Array(net.suffix(tailPoints)),
+            netRx: Array(netRx.suffix(tailPoints)),
+            netTx: Array(netTx.suffix(tailPoints)),
             gpu: Array(gpu.suffix(tailPoints)),
             fan: Array(fan.suffix(tailPoints)),
             drainName: drain?.name,

@@ -23,6 +23,9 @@ struct ValueTile: View {
     var chip: (String, Color)? = nil
     let values: [Double]
     var chartStyle: MiniChart.Style = .area
+    /// When set, the chart renders two lines (network download/upload) instead
+    /// of the single `values` series.
+    var dual: (down: [Double], up: [Double], downColor: Color, upColor: Color)? = nil
     var footnote: String? = nil
     /// .card only (feeds GlassCard).
     var minHeight: CGFloat? = nil
@@ -31,6 +34,16 @@ struct ValueTile: View {
         switch variant {
         case .card: card
         case .hud:  hud
+        }
+    }
+
+    /// Single series, or two lines when `dual` is set (network up/down).
+    @ViewBuilder
+    private var chart: some View {
+        if let d = dual {
+            DualMiniChart(down: d.down, up: d.up, downColor: d.downColor, upColor: d.upColor)
+        } else {
+            MiniChart(values: values, color: accent, style: chartStyle)
         }
     }
 
@@ -48,8 +61,7 @@ struct ValueTile: View {
                         Text(unit).font(Brand.mono(12)).foregroundStyle(Brand.textSecondary)
                     }
                 }
-                MiniChart(values: values, color: accent, style: chartStyle)
-                    .frame(height: 30)
+                chart.frame(height: 30)
                 Spacer(minLength: 2)
                 if let f = footnote {
                     Text(f).font(Brand.mono(10)).foregroundStyle(Brand.textTertiary).lineLimit(1)
@@ -69,7 +81,7 @@ struct ValueTile: View {
                 Text(value).font(Brand.mono(15, .semibold)).foregroundStyle(Brand.textPrimary)
                 if !unit.isEmpty { Text(unit).font(Brand.mono(9)).foregroundStyle(Brand.textSecondary) }
             }
-            MiniChart(values: values, color: accent, style: chartStyle).frame(height: 13)
+            chart.frame(height: 13)
             if let f = footnote {
                 Text(f).font(Brand.mono(8.5)).foregroundStyle(Brand.textTertiary).lineLimit(1)
             }

@@ -233,8 +233,11 @@ struct HistoryView: View {
                         chartCard("GPU usage", "%", [("gpu", snapshot.gpuUsage, Brand.orange)], marks: .bars)
                         chartCard("Disk I/O", "MB/s", [("read", snapshot.diskRead, Brand.blue),
                                                        ("write", snapshot.diskWrite, Color(hex: 0x6E8BEA))])
-                        chartCard("Network", "MB/s", [("rx", snapshot.netRx, Brand.green),
-                                                      ("tx", snapshot.netTx, Color(hex: 0x57C2A5))])
+                        // Download (rx) green ↓, upload (tx) blue ↑ — clearly
+                        // distinct hues (the old rx/tx greens read as one line),
+                        // matching the Status net tile.
+                        chartCard("Network", "MB/s", [("rx ↓", snapshot.netRx, Brand.green),
+                                                      ("tx ↑", snapshot.netTx, Brand.blue)])
                         chartCard("Thermal", "°C", [("cpu", snapshot.thermalCPU, Brand.red),
                                                     ("gpu", snapshot.thermalGPU, Brand.orange),
                                                     ("battery", snapshot.thermalBattery, Brand.gold)])

@@ -180,12 +180,16 @@ struct StatusView: View {
         let (value, unit) = Fmt.rateParts(total, mbDecimals: 2)
         var chip: (String, Color)? = nil
         if let p = s.proxy, p.enabled, !p.type.isEmpty { chip = (p.type, Brand.blue) }
+        // Two lines, one scale: download (green, ↓) and upload (blue, ↑) —
+        // matching the ↓/↑ figures in the footnote. Tile window = the recent
+        // 2 min of the 1 s ring; longer windows live in the History tab.
+        let rxHist = useLive ? io.netRxHistory(lastSeconds: 120) : model.netRxHist
+        let txHist = useLive ? io.netTxHistory(lastSeconds: 120) : model.netTxHist
         return ValueTile(
             eyebrow: "Network", glyph: "network", accent: Brand.green,
             value: value, unit: unit, chip: chip,
-            // Tile sparkline = the recent 2 min of the 1 s ring; longer
-            // windows live in the History tab (they flattened the tile).
-            values: useLive ? io.netHistory(lastSeconds: 120) : model.netHist, chartStyle: .area,
+            values: [],
+            dual: (down: rxHist, up: txHist, downColor: Brand.green, upColor: Brand.blue),
             footnote: "↓ \(Fmt.rate(rx))  ↑ \(Fmt.rate(tx)) · \(snapNet?.name ?? "—") · \(snapNet?.ip ?? "—")")
     }
 }
@@ -735,6 +739,8 @@ final class StatusModel: ObservableObject {
     @Published var memHist: [Double] = []
     @Published var gpuHist: [Double] = []
     @Published var netHist: [Double] = []
+    @Published var netRxHist: [Double] = []
+    @Published var netTxHist: [Double] = []
     /// Fan RPM series. Samples are kept only when that snapshot actually
     /// reported fans (fanCount > 0) — 0 RPM with fans present is real
     /// data (parked), no fans detected contributes nothing.
@@ -781,6 +787,7 @@ final class StatusModel: ObservableObject {
     func subscribeSparklines() async {
         for await v in feeds.metricSparklines(db: db).subscribeValues() {
             cpuHist = v.cpu; memHist = v.mem; gpuHist = v.gpu; netHist = v.net; fanHist = v.fan
+            netRxHist = v.netRx; netTxHist = v.netTx
         }
     }
 

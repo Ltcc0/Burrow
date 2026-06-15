@@ -110,3 +110,56 @@ struct MiniChart: View {
         return (lo, hi)
     }
 }
+
+/// Two area sparklines on ONE shared scale — the network tile's download
+/// (`down`) and upload (`up`) in two distinct colors. Shared scale so the
+/// relative heights are honest; both floor at 0.
+struct DualMiniChart: View {
+    let down: [Double]
+    let up: [Double]
+    var downColor: Color
+    var upColor: Color
+
+    private func cap(_ a: [Double]) -> [Double] { a.count > 120 ? Array(a.suffix(120)) : a }
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            let d = cap(down), u = cap(up)
+            let hi = max(d.max() ?? 0, u.max() ?? 0, 0.0001)
+            ZStack {
+                series(d, w: w, h: h, hi: hi, color: downColor)
+                series(u, w: w, h: h, hi: hi, color: upColor)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func series(_ vals: [Double], w: CGFloat, h: CGFloat, hi: Double, color: Color) -> some View {
+        if vals.count < 2 {
+            Path { p in p.move(to: CGPoint(x: 0, y: h - 1)); p.addLine(to: CGPoint(x: w, y: h - 1)) }
+                .stroke(color.opacity(0.25), lineWidth: 1)
+        } else {
+            let n = vals.count
+            let pts: [CGPoint] = vals.enumerated().map { i, v in
+                CGPoint(x: w * CGFloat(i) / CGFloat(n - 1), y: (1.0 - CGFloat(v / hi)) * h)
+            }
+            ZStack {
+                Path { p in
+                    guard let first = pts.first, let last = pts.last else { return }
+                    p.move(to: CGPoint(x: first.x, y: h)); p.addLine(to: first)
+                    for pt in pts.dropFirst() { p.addLine(to: pt) }
+                    p.addLine(to: CGPoint(x: last.x, y: h)); p.closeSubpath()
+                }
+                .fill(LinearGradient(colors: [color.opacity(0.22), color.opacity(0.02)],
+                                     startPoint: .top, endPoint: .bottom))
+                Path { p in
+                    guard let first = pts.first else { return }
+                    p.move(to: first)
+                    for pt in pts.dropFirst() { p.addLine(to: pt) }
+                }
+                .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            }
+        }
+    }
+}

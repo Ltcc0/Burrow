@@ -97,9 +97,22 @@ final class LiveFeed: ObservableObject {
     /// shape belongs to the History tab, which windows the raw samples
     /// itself.
     func netHistory(lastSeconds: TimeInterval) -> [Double] {
+        windowed(lastSeconds) { $0.rxMBs + $0.txMBs }
+    }
+
+    /// Download (rx) and upload (tx) windowed separately — the net tile
+    /// draws them as two lines instead of one summed shape.
+    func netRxHistory(lastSeconds: TimeInterval) -> [Double] {
+        windowed(lastSeconds) { $0.rxMBs }
+    }
+    func netTxHistory(lastSeconds: TimeInterval) -> [Double] {
+        windowed(lastSeconds) { $0.txMBs }
+    }
+
+    private func windowed(_ lastSeconds: TimeInterval, _ pick: (Sample) -> Double) -> [Double] {
         guard let newest = samples.last?.time else { return [] }
         let cutoff = newest.addingTimeInterval(-lastSeconds)
-        return samples.filter { $0.time >= cutoff }.map { $0.rxMBs + $0.txMBs }
+        return samples.filter { $0.time >= cutoff }.map(pick)
     }
 
     fileprivate func applySnapshot(_ s: MoleStatus, at: Date) {
