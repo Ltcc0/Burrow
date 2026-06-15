@@ -67,6 +67,7 @@ struct OptimizeView: View {
                                               flow.report?.groups.count ?? 0))
                 }
                 TaskReportView(groups: flow.report?.groups ?? [], accent: Tool.optimize.accent)
+                ViewLogDisclosure(log: flow.rawLog)
             }
         }
     }

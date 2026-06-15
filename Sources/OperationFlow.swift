@@ -107,6 +107,11 @@ final class OperationFlow<Report: Sendable>: ObservableObject {
     @Published private(set) var state: State = .idle
     /// Live during the run (recomputed per streamed line), final at exit.
     @Published private(set) var report: Report?
+    /// The full ANSI-stripped transcript, set once at exit — the demoted
+    /// "View Log" disclosure on the result screen. Built only at the
+    /// terminal event (not per line) to stay O(n), and empty for a run
+    /// that never reached an exit (cancelled).
+    @Published private(set) var rawLog: String = ""
 
     /// Stop only works for un-elevated runs: the root `mo` is a child of
     /// the privileged shell, and SIGTERMing our osascript messenger would
@@ -179,6 +184,7 @@ final class OperationFlow<Report: Sendable>: ObservableObject {
                                stdin: op.stdin, elevated: op.elevated, timeout: op.timeout)
         state = .running
         report = nil
+        rawLog = ""
         currentElevated = op.elevated
         currentLabel = op.label
         cancelRequested = false
@@ -207,6 +213,7 @@ final class OperationFlow<Report: Sendable>: ObservableObject {
                     guard !self.cancelRequested else { return }
                     self.reactivateIfElevated(op)   // backstop: no-output runs
                     self.report = op.reduce(lines)
+                    self.rawLog = lines.joined(separator: "\n")
                     self.state = .finished(.done(exit: code))
                     if op.label != nil {
                         // Replace the last streamed line with the parsed
@@ -221,6 +228,7 @@ final class OperationFlow<Report: Sendable>: ObservableObject {
                     guard !self.cancelRequested else { return }
                     self.reactivateIfElevated(op)
                     self.report = op.reduce(lines)
+                    self.rawLog = lines.joined(separator: "\n")
                     self.state = .finished(.failed(NSLocalizedString("authorization cancelled", comment: "")))
                     if op.label != nil { self.center.end(id, success: false) }
                 }
@@ -240,6 +248,7 @@ final class OperationFlow<Report: Sendable>: ObservableObject {
     func reset() {
         state = .idle
         report = nil
+        rawLog = ""
     }
 }
 

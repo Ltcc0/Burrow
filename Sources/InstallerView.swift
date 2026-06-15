@@ -355,13 +355,21 @@ struct MoInteractiveView: View {
         runner.confirm(selected)
     }
 
+    /// Result screen (parity with Clean/Optimize): a status/back bar, a
+    /// prominent DoneBanner summary, and the raw Mole transcript demoted
+    /// into a collapsed "View Log" instead of being the whole screen.
     private func doneView(_ code: Int32) -> some View {
-        VStack(spacing: 0) {
+        let nothing = runner.items.isEmpty && runner.resultText.isEmpty
+        let removalDetail = selected.isEmpty ? nil
+            : String(format: NSLocalizedString("%d removed", comment: ""), selected.count)
+        return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: code == 0 ? "checkmark.seal.fill" : "exclamationmark.triangle")
                     .foregroundStyle(code == 0 ? cfg.tool.accent : Brand.orange)
-                Text(runner.items.isEmpty && runner.resultText.isEmpty ? cfg.emptyText : "Done.")
-                    .font(Brand.sans(14, .semibold)).foregroundStyle(Brand.textPrimary)
+                Text(nothing ? cfg.emptyText
+                     : (code == 0 ? NSLocalizedString("Done — leftovers removed.", comment: "")
+                                  : NSLocalizedString("Finished with errors.", comment: "")))
+                    .font(Brand.mono(12)).foregroundStyle(Brand.textSecondary)
                 Spacer()
                 Button { backToHero() } label: {
                     Label("Back", systemImage: "chevron.left").font(Brand.mono(11)).foregroundStyle(Brand.textSecondary)
@@ -369,12 +377,11 @@ struct MoInteractiveView: View {
             }
             .padding(.horizontal, 18).padding(.vertical, 12)
             Rectangle().fill(Brand.hairline).frame(height: 1)
-            if !runner.resultText.isEmpty {
-                ScrollView {
-                    Text(runner.resultText).font(Brand.mono(11)).foregroundStyle(Brand.textSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(16).textSelection(.enabled)
-                }
-            } else { Spacer() }
+            if code == 0 && !nothing {
+                DoneBanner(accent: cfg.tool.accent, title: "Removed", detail: removalDetail)
+            }
+            Spacer()
+            ViewLogDisclosure(log: runner.resultText, accent: cfg.tool.accent)
         }
     }
 

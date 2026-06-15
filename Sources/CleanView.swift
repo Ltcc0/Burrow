@@ -365,6 +365,9 @@ struct CleanView: View {
                            detail: realFlow.report?.summary.map(\.completionLine))
             }
             TaskReportView(groups: realFlow.report?.groups ?? [], accent: Tool.clean.accent)
+            if case .finished = realFlow.state {
+                ViewLogDisclosure(log: realFlow.rawLog)
+            }
         }
     }
     // (Session restore lives with the run watcher in runRealClean — a

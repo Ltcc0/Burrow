@@ -84,7 +84,11 @@ wins, and stays feature-flagged off until signing is sorted.
 - [ ] User-scope agent toggles (controllable = `scope==.user && !bundledInApp`): disable via
       `launchctl bootout gui/$UID + disable` (reversible). System/bundled stay read-only.
 
-### PR-G · Privileged helper (decision 4 "do it all") — BLOCKED on signing
+### PR-G · Privileged helper (decision 4 "do it all") — BACKLOGGED 2026-06-14
+> User decision 2026-06-14: backlog the privileged-helper track entirely; ship only the
+> non-privileged PRs (A–F). Fan Auto/Cool/Max, system-daemon disable, and root purgeable
+> reclaim wait for a future signing-enabled effort. Startup disable ships USER-scope only (F);
+> Tune-Up ships Clean+Optimize only (E), no purgeable step.
 - [ ] `SMAppService.daemon` target + launchd plist + XPC protocol + entitlements
       (`SMPrivilegedExecutables`/`SMAuthorizedClients`).
 - [ ] Helper: SMC fan write (`FS!`/`F{n}Md`/`F{n}Tg`) with rpm clamp + auto-revert timer;

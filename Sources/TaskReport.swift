@@ -335,6 +335,54 @@ struct ToolHero<Buttons: View>: View {
     }
 }
 
+/// The raw streamed transcript, demoted below the structured result —
+/// collapsed by default so the report (not a wall of terminal text) is the
+/// headline, expandable when someone wants the full log. Shared by every
+/// result screen (Clean / Optimize / Purge / Installer).
+struct ViewLogDisclosure: View {
+    let log: String
+    var accent: Color = Brand.textSecondary
+    @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if !log.isEmpty {
+            VStack(spacing: 0) {
+                Rectangle().fill(Brand.hairline).frame(height: 1)
+                Button {
+                    if reduceMotion { expanded.toggle() }
+                    else { withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() } }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("View Log").font(Brand.mono(11))
+                        Spacer()
+                    }
+                    .foregroundStyle(Brand.textSecondary)
+                    .padding(.horizontal, 18).padding(.vertical, 9)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(NSLocalizedString("View Log", comment: ""))
+                .accessibilityValue(expanded ? NSLocalizedString("expanded", comment: "")
+                                             : NSLocalizedString("collapsed", comment: ""))
+                if expanded {
+                    ScrollView {
+                        Text(log)
+                            .font(Brand.mono(10)).foregroundStyle(Brand.textTertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 18).padding(.bottom, 12)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 240)
+                    .scrollIndicators(.hidden)
+                }
+            }
+        }
+    }
+}
+
 /// Success header shown above a finished Clean / Optimize report.
 struct DoneBanner: View {
     let accent: Color
