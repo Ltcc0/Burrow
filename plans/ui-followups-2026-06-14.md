@@ -41,33 +41,29 @@ wins, and stays feature-flagged off until signing is sorted.
 
 ## PR sequence (each independently shippable + verified `xcodebuild`)
 
-### PR-A · Clean & results  ✅ analyze done (`d3c2beb`)
+### PR-A · Clean & results  ✅ DONE (`d3c2beb`, `0dd3368`)
 - [x] **Analyze first-open progress** — cap 40→200 + bounded-concurrent per-child walk.
-- [ ] **Unified result component** — `OperationResultView`: DoneBanner + summary header
-      (primary) + TaskReportView body + a **demoted "View Log" disclosure**. Thread the raw
-      stream through `OperationFlow` (add `@Published rawLog`; today lines are discarded at
-      OperationFlow.swift:195-228) so View Log has content.
-- [ ] **Purge/Installer result screens** — route their `MoInteractive` finish through the same
-      `OperationResultView` (summary line from removal count + View Log), replacing the raw
-      `resultText` dump (InstallerView.swift:366-387).
-- [ ] **System busy badge (honest)** — populate `.systemBusy` only from a **prior run's
-      per-path failure** (thread failed paths out of `parseTaskReport` into the next review's
-      lock map). No static deny-list (would fight `CleanLockTests` `com.apple.helpd` = Safe).
+- [x] **Unified View Log** — `rawLog` threaded through `OperationFlow`; shared
+      `ViewLogDisclosure` demotes the transcript below the structured report (Clean/Optimize).
+- [x] **Purge/Installer result screens** — status bar + DoneBanner + demoted View Log,
+      replacing the raw `resultText` dump.
+- [ ] **System busy badge (honest)** — DEFERRED: needs prior-run per-path failure feedback
+      (mo doesn't reliably emit per-path busy); not faking it with a static deny-list. Revisit.
 
-### PR-B · Merge Clean (decision 3)
-- [ ] Drop `.purge`/`.installer` from `Tool.navOrder` (keep enum cases — accents/copy/MCP/Explain
-      keep compiling). Add a category chooser (three cards) to `CleanView`'s hero switching among
-      `CleanView` body / `MoInteractiveView(.purge)` / `MoInteractiveView(.installer)`.
-- [ ] Update Explain deep-links + `BURROW_OPEN_ON_LAUNCH` router + onboarding copy.
+### PR-B · Merge Clean (decision 3)  ✅ DONE (`c9fb712`)
+- [x] `Tool.navOrder` drops `.purge`/`.installer` (cases kept); new `CleanHub` with three
+      category cards switching among CleanView / MoInteractiveView(.purge/.installer), all
+      kept mounted. RootView coerces stray purge/installer panes → clean; Explain deep-links
+      retargeted to Clean.
 
-### PR-C · Updates & self-update (decisions 1 & 2)
-- [ ] **Auto-surface** — `UpdatesModel`: auto-run brew on tab open via `SoftwareView` isActive
-      hooks; persist + reload a results cache (Application Support JSON, keyed by bundleID);
-      live third-party check stays click-gated.
-- [ ] **Brew streaming** — route `brew upgrade` through `OperationFlow` for live progress.
-- [ ] **Self-update** — new `AppUpdate` model (GitHub releases GET, semver compare, default-on
-      `Store.autoCheckForUpdates`, ~daily); in-window banner (reuse the bottom overlay slot) +
-      menu-bar dot; Settings About + Check-for-Updates rows; **SECURITY.md/TELEMETRY.md** note.
+### PR-C · Updates & self-update (decisions 1 & 2)  ✅ DONE (`ad4b9e9`)
+- [x] **Auto-surface** — `UpdatesModel.autoSurface()` auto-runs brew on Updates open; list
+      shows brew/available without the manual check; live third-party stays click-gated.
+- [ ] **Brew streaming** — DEFERRED (polish, not a user ask): brew upgrade still uses the
+      blocking capture, not OperationFlow streaming.
+- [x] **Self-update** — `AppUpdate` (GitHub GET, semver, default-on, launch + ~daily); top
+      in-window banner + menu-bar dot; Settings About auto-check toggle + Check/About buttons;
+      SECURITY.md documents the GitHub egress.
 
 ### PR-D · Camera/mic privacy indicators (opt-in)
 - [ ] New `CameraMicSensor` (CoreMediaIO `DeviceIsRunningSomewhere` + CoreAudio equivalent,
