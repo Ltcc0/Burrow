@@ -70,10 +70,11 @@ wins, and stays feature-flagged off until signing is sorted.
       `Store.cameraMicIndicatorEnabled` (default false); popover only-when-active "in use"
       chip; honest neutral label; Settings → Menu bar toggle.
 
-### PR-E · Tune-Up run-all (safe subset of decision 4)  ✅ DONE (`47ec979`)
-- [x] `TuneUpRunner` + `TuneUpView` sequencing existing `OperationFlow`s (Clean + Optimize),
-      conservative default, per-step opt-out, pre-run plan, status cards → done summary.
-      Entry: Home "Tune-Up" button (sheet). N honest auth prompts (pooling waits on helper).
+### PR-E · Tune-Up run-all — ⛔ REVERTED, deferred to a later release (issue #77)
+- First cut (`47ec979`) reverted: state didn't persist across sheet close/reopen, it was a
+  popup not a pane, and it only sequenced Clean+Optimize. The real design (persistent pane that
+  auto-flags apps to uninstall/update, brew updates, startup to review, big disks, then one-tap
+  runs the safe set) is tracked in https://github.com/caezium/Burrow/issues/77.
 
 ### PR-F · Startup user-level disable (safe subset of decision 4)  ✅ DONE (`6ee0da4`)
 - [x] `controllable` = user-scope, non-bundled, healthy; real Toggle via `StartupControl`
