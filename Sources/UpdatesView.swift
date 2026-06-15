@@ -61,18 +61,18 @@ struct UpdatesView: View {
                 }
             }
         }
-        .onAppear { model.prepare(apps: apps) }
+        .onAppear { model.prepare(apps: apps); model.autoSurface() }
         .onChange(of: apps.count) { _, _ in model.prepare(apps: apps) }
     }
 
     private var header: some View {
         HStack(spacing: 10) {
-            if model.checked {
+            if model.checked || !model.brewItems.isEmpty {
                 let n = model.availableItems.count + model.brewItems.count
                 Text(String(format: NSLocalizedString(n == 1 ? "%d update" : "%d updates", comment: ""), n))
                     .font(Brand.mono(12)).foregroundStyle(Brand.textSecondary)
             } else {
-                Text("Sources detected locally — checking versions contacts Apple and vendor servers.")
+                Text("Homebrew shown automatically — checking app versions contacts Apple and vendor servers.")
                     .font(Brand.mono(10)).foregroundStyle(Brand.textTertiary)
             }
             Spacer()
@@ -101,7 +101,7 @@ struct UpdatesView: View {
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 36)
                 }
-                if model.checked, !model.availableItems.isEmpty || !model.brewItems.isEmpty {
+                if !model.availableItems.isEmpty || !model.brewItems.isEmpty {
                     sectionHeader(NSLocalizedString("Updates available", comment: ""),
                                   count: model.availableItems.count + model.brewItems.count)
                     ForEach(model.availableItems) { appRow($0) }
@@ -248,6 +248,7 @@ final class UpdatesModel: ObservableObject {
     @Published var error: String?
     @Published var upgrading: Set<String> = []
     private var preparedCount = -1
+    private var brewSurfaced = false
 
     var availableItems: [AppUpdateItem] { appItems.filter(\.updateAvailable) }
     var upToDateItems: [AppUpdateItem] {
@@ -274,6 +275,19 @@ final class UpdatesModel: ObservableObject {
                 self?.appItems = detected
                 self?.uncheckableApps = unknown
             }
+        }
+    }
+
+    /// Auto-surface the low-sensitivity sources on tab open: `brew outdated`
+    /// is the user's own tool (no app-controlled egress), so it runs without
+    /// the explicit click that gates the third-party appcast/iTunes checks.
+    /// Once per session; the manual "Check" still does the full network pass.
+    func autoSurface() {
+        guard !brewSurfaced, !checking else { return }
+        brewSurfaced = true
+        Task {
+            let brews = await Self.brewOutdated()
+            await MainActor.run { if self.brewItems.isEmpty { self.brewItems = brews } }
         }
     }
 

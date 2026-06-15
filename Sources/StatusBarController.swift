@@ -24,6 +24,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let producer: SnapshotProducer
     private weak var delegate: AppDelegate?
     private var metricsSub: AnyCancellable?
+    /// A small accent dot shown over the glyph when a Burrow self-update is
+    /// available (driven by AppUpdate via .burrowUpdateAvailability).
+    private let updateDot = NSView()
+    private var updateObserver: NSObjectProtocol?
+    /// Driven by the .burrowUpdateAvailability payload — avoids reading the
+    /// @MainActor AppUpdate singleton from this (nonisolated) controller.
+    private var updateAvailable = false
 
     init(db: DB, producer: SnapshotProducer, delegate: AppDelegate) {
         self.db = db
@@ -55,8 +62,28 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             button.target = self
             // Right-click gets the quick menu; left-click keeps the HUD.
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+
+            updateDot.wantsLayer = true
+            updateDot.layer?.backgroundColor = NSColor(Tool.status.accent).cgColor
+            updateDot.layer?.cornerRadius = 3
+            updateDot.frame = NSRect(x: 0, y: 0, width: 6, height: 6)
+            button.addSubview(updateDot)
         }
         applyDisplayMode()
+        refreshUpdateDot()
+        updateObserver = NotificationCenter.default.addObserver(
+            forName: .burrowUpdateAvailability, object: nil, queue: .main) { [weak self] note in
+            self?.updateAvailable = (note.object as? Bool) ?? false
+            self?.refreshUpdateDot()
+        }
+    }
+
+    /// Show/hide + reposition the update dot at the glyph's top-right.
+    func refreshUpdateDot() {
+        updateDot.isHidden = !updateAvailable
+        if let b = item.button?.bounds {
+            updateDot.frame.origin = CGPoint(x: max(2, b.maxX - 8), y: b.maxY - 8)
+        }
     }
 
     /// Icon vs Metrics (Settings ▸ Menu Bar): metrics renders live CPU% +
@@ -72,15 +99,18 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                     let mem = Double(s.memory.used) / 1_073_741_824
                     button.title = String(format: " %.0f%% · %.1fG", s.cpu.usage, mem)
                     button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+                    self?.refreshUpdateDot()   // width changed → reposition
                 }
         } else {
             metricsSub = nil
             button.title = ""
             button.imagePosition = .imageOnly
         }
+        refreshUpdateDot()
     }
 
     deinit {
+        if let o = updateObserver { NotificationCenter.default.removeObserver(o) }
         // Explicitly remove the item so toggling the menu-bar setting off
         // (AppDelegate drops its reference) clears it from the bar at once.
         NSStatusBar.system.removeStatusItem(item)

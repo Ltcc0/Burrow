@@ -72,9 +72,18 @@ This is the part people rightly scrutinize in cleaners. Burrow's model:
   - History is a local **SQLite** file under
     `~/Library/Application Support/Burrow/`.
 - **Other outbound paths:**
+  - **Burrow self-update check:** when "Check for updates automatically"
+    is on (Settings → About, on by default), Burrow makes one unauthenticated
+    GET to the GitHub Releases API on launch and about once a day to see if a
+    newer Burrow exists. It reads a version tag; it sends nothing about you,
+    and never installs anything — a found update only shows a banner. Turn the
+    toggle off to make the check fully manual (the menu/Settings button still
+    works).
   - The Software → **Updates** tab runs `brew outdated`, which contacts
     Homebrew's update feeds — the same check `brew` does for itself. It reads
-    version info; it sends nothing about you.
+    version info; it sends nothing about you. App version checks (Sparkle
+    appcasts, App Store lookups) still happen only when you click "Check for
+    updates".
   - **Settings → Update Mole** runs `mo update` (Mole's own self-update
     traffic), only when you click it.
   - The optional **AI "Explain" lens** (off by default) talks to

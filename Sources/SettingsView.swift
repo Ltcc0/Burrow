@@ -53,6 +53,7 @@ struct SettingsView: View {
     @State private var skipIntro: Bool = Store.skipIntro
     @State private var notifyOnCompletion: Bool = Store.notifyOnCompletion
     @State private var smartReminders: Bool = Store.smartRemindersEnabled
+    @State private var autoCheckUpdates: Bool = Store.autoCheckForUpdates
 
     // Maintenance
     @State private var whitelistPatterns: [String] = []
@@ -245,7 +246,16 @@ struct SettingsView: View {
 
             section("About", "info.circle") {
                 infoRow("Version", appVersionText)
-                HStack {
+                toggleRow("Check for updates automatically", isOn: $autoCheckUpdates) { on in
+                    Store.autoCheckForUpdates = on
+                    if on { AppUpdate.shared.checkNow() }
+                }
+                Text("Burrow checks GitHub for new releases on launch and about once a day, and shows a banner if one is found. It never installs anything on its own.")
+                    .font(Brand.sans(11)).foregroundStyle(Brand.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    PillButton(title: "Check for Updates", filled: false) { UpdateCheck.checkNow() }
+                    PillButton(title: "About Burrow", filled: false) { AppDelegate.shared?.showAboutPanel() }
                     Spacer()
                     Link(NSLocalizedString("Source on GitHub", comment: ""),
                          destination: URL(string: "https://github.com/caezium/Burrow")!)
