@@ -136,19 +136,20 @@ struct ExplainContext {
 enum ExplainSuggestion: String, Equatable {
     case clean, purge, installer
 
+    /// Purge/Installer now live as categories inside the merged Clean pane
+    /// (CleanHub), so all three suggestions open Clean; the user picks the
+    /// category card there.
     var pane: Pane {
         switch self {
-        case .clean:     return .tool(.clean)
-        case .purge:     return .tool(.purge)
-        case .installer: return .tool(.installer)
+        case .clean, .purge, .installer: return .tool(.clean)
         }
     }
 
     var ctaLabel: String {
         switch self {
         case .clean:     return "Open Clean"
-        case .purge:     return "Open Purge"
-        case .installer: return "Open Installers"
+        case .purge:     return "Open Clean · projects"
+        case .installer: return "Open Clean · installers"
         }
     }
 }

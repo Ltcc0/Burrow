@@ -47,7 +47,13 @@ struct RootView: View {
         self.producer = producer
         self.feeds = feeds
         self.delegate = delegate
-        self._pane = State(initialValue: initialPane)
+        self._pane = State(initialValue: Self.normalize(initialPane))
+    }
+
+    /// Purge/Installer fold into Clean (CleanHub), so any lingering deep-link
+    /// to those panes resolves to the merged Clean pane rather than a blank.
+    static func normalize(_ p: Pane) -> Pane {
+        (p == .tool(.purge) || p == .tool(.installer)) ? .tool(.clean) : p
     }
 
     var body: some View {
@@ -74,7 +80,7 @@ struct RootView: View {
         }
         .onDisappear { producer.setForeground(false) }
         .onReceive(NotificationCenter.default.publisher(for: .burrowSelectPane)) { note in
-            if let p = note.object as? Pane { pane = p }
+            if let p = note.object as? Pane { pane = Self.normalize(p) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .burrowWindowVisibility)) { note in
             if let visible = note.object as? Bool { windowVisible = visible }
@@ -113,9 +119,7 @@ struct RootView: View {
         ZStack {
             AnalyzeView(isActive: pane == .tool(.analyze)).tabVisible(pane == .tool(.analyze))
             SoftwareView(isActive: pane == .tool(.apps)).tabVisible(pane == .tool(.apps))
-            CleanView().tabVisible(pane == .tool(.clean))
-            MoInteractiveView(.purge, isActive: pane == .tool(.purge)).tabVisible(pane == .tool(.purge))
-            MoInteractiveView(.installer, isActive: pane == .tool(.installer)).tabVisible(pane == .tool(.installer))
+            CleanHub().tabVisible(pane == .tool(.clean))
             OptimizeView().tabVisible(pane == .tool(.optimize))
 
             // Gated on window visibility too: these two carry live timers

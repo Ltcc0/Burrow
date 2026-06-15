@@ -16,10 +16,12 @@ enum Tool: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Display order in the top nav. Cleanup family (clean → purge →
-    /// installer → optimize) leads, then apps / analyze. The live dashboard
+    /// Display order in the top nav. Purge and Installer fold into Clean as
+    /// category cards (CleanHub), so the cleanup family is one pill: clean →
+    /// optimize, then apps / analyze. The .purge/.installer cases live on for
+    /// the hub cards, MCP actions, and Explain deep-links. The live dashboard
     /// isn't a tool anymore — it's Home, reached by the Burrow mark.
-    static let navOrder: [Tool] = [.clean, .purge, .installer, .optimize, .apps, .analyze]
+    static let navOrder: [Tool] = [.clean, .optimize, .apps, .analyze]
 
     /// Lowercase tab label (matches the instrument-panel voice).
     var label: String { NSLocalizedString(rawValue, comment: "") }
