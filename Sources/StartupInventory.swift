@@ -55,14 +55,71 @@ struct StartupItem: Identifiable, Equatable {
     /// the UI marks them "Bundled inside an app; review only".
     var bundledInApp: Bool { executable?.contains(".app/") == true }
 
+    /// User-scope, not bundled in an app, and not broken — the only items
+    /// Burrow can safely enable/disable without admin (launchctl in the
+    /// per-user gui domain). Everything else stays review-only.
+    var controllable: Bool { scope == .user && !bundledInApp && problem == nil }
+
     /// The classification subline: kind + who manages it.
     var subline: String {
         let management = bundledInApp
             ? NSLocalizedString("Bundled inside an app; review only", comment: "")
             : (scope == .system
                 ? NSLocalizedString("System-wide; review only", comment: "")
-                : NSLocalizedString("Yours; remove the file to disable", comment: ""))
+                : NSLocalizedString("Yours; toggle to disable", comment: ""))
         return "\(kind.label) · \(management)"
+    }
+}
+
+/// Enable/disable user launch agents via `launchctl` in the per-user gui
+/// domain — no admin needed (system/bundled items stay read-only). The
+/// disable persists across reboots and is reversible. Best-effort: launchctl's
+/// exit codes are uneven, so state is re-read from `print-disabled` to confirm.
+enum StartupControl {
+    private static let launchctl = "/bin/launchctl"
+    private static var domain: String { "gui/\(getuid())" }
+
+    /// Labels currently disabled in the per-user database.
+    static func disabledLabels() -> Set<String> {
+        guard let out = try? MoEngine.shared.capture(
+            MoCommand(target: .executable(launchctl), args: ["print-disabled", domain], timeout: 8)).stdout
+        else { return [] }
+        var disabled: Set<String> = []
+        for line in out.components(separatedBy: "\n") {
+            // "com.example.foo" => disabled   (newer)  or  => true  (older)
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.contains("=>") else { continue }
+            let lower = t.lowercased()
+            guard lower.contains("=> disabled") || lower.contains("=> true") else { continue }
+            if let open = t.range(of: "\""),
+               let close = t.range(of: "\"", range: open.upperBound..<t.endIndex) {
+                disabled.insert(String(t[open.upperBound..<close.lowerBound]))
+            }
+        }
+        return disabled
+    }
+
+    /// Enable or disable one controllable user agent. Returns whether the
+    /// re-read state matches the request.
+    @discardableResult
+    static func setEnabled(_ enabled: Bool, item: StartupItem) -> Bool {
+        guard item.controllable else { return false }
+        let svc = "\(domain)/\(item.label)"
+        if enabled {
+            _ = run(["enable", svc])
+            _ = run(["bootstrap", domain, item.plistPath])   // load now
+        } else {
+            _ = run(["bootout", svc])                         // unload now (ok if not loaded)
+            _ = run(["disable", svc])                         // persist
+        }
+        let nowDisabled = disabledLabels().contains(item.label)
+        return enabled ? !nowDisabled : nowDisabled
+    }
+
+    @discardableResult
+    private static func run(_ args: [String]) -> Int32 {
+        (try? MoEngine.shared.capture(
+            MoCommand(target: .executable(launchctl), args: args, timeout: 12)).exitCode) ?? -1
     }
 }
 

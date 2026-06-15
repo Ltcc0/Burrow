@@ -769,6 +769,8 @@ final class StartupModel: ObservableObject {
     enum Filter { case all, agents, daemons, problems }
 
     @Published var items: [StartupItem] = []
+    /// Labels currently disabled in the per-user launchd database.
+    @Published var disabled: Set<String> = []
     @Published var loading = false
     @Published var filter: Filter = .all
     @Published var query = ""
@@ -784,10 +786,25 @@ final class StartupModel: ObservableObject {
         loading = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let scanned = StartupInventory.scanLive()
+            let disabled = StartupControl.disabledLabels()
             Task { @MainActor in
                 self?.items = scanned
+                self?.disabled = disabled
                 self?.loading = false
             }
+        }
+    }
+
+    func isEnabled(_ item: StartupItem) -> Bool { !disabled.contains(item.label) }
+
+    /// Toggle a controllable user agent (optimistic, then re-read to confirm).
+    func setEnabled(_ enabled: Bool, _ item: StartupItem) {
+        guard item.controllable else { return }
+        if enabled { disabled.remove(item.label) } else { disabled.insert(item.label) }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            StartupControl.setEnabled(enabled, item: item)
+            let fresh = StartupControl.disabledLabels()
+            Task { @MainActor in self?.disabled = fresh }
         }
     }
 
@@ -873,13 +890,24 @@ struct StartupView: View {
             .buttonStyle(.plain)
             .help(NSLocalizedString("Reveal in Finder", comment: ""))
             .accessibilityLabel(NSLocalizedString("Reveal in Finder", comment: ""))
-            // Read-only inventory: macOS doesn't let us modify bundled or
-            // system-owned tasks safely — the lock says so instead of a
-            // disabled placebo toggle.
-            Image(systemName: "lock")
-                .font(.system(size: 10)).foregroundStyle(Brand.textTertiary)
-                .help(NSLocalizedString("Review only — managed by its app or the system.", comment: ""))
-                .accessibilityLabel(NSLocalizedString("Review only", comment: ""))
+            // User agents get a real toggle (launchctl, no admin); bundled
+            // and system-owned items stay review-only behind the lock —
+            // macOS won't let us change those safely without root.
+            if item.controllable {
+                Toggle("", isOn: Binding(get: { model.isEnabled(item) },
+                                         set: { model.setEnabled($0, item) }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    .tint(Tool.apps.accent)
+                    .help(NSLocalizedString("Enable or disable this login item", comment: ""))
+                    .accessibilityLabel(item.label)
+                    .accessibilityValue(model.isEnabled(item)
+                        ? NSLocalizedString("enabled", comment: "") : NSLocalizedString("disabled", comment: ""))
+            } else {
+                Image(systemName: "lock")
+                    .font(.system(size: 10)).foregroundStyle(Brand.textTertiary)
+                    .help(NSLocalizedString("Review only — managed by its app or the system.", comment: ""))
+                    .accessibilityLabel(NSLocalizedString("Review only", comment: ""))
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .accessibilityElement(children: .combine)
