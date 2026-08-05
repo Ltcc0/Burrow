@@ -32,6 +32,9 @@ public partial class App : Application
                 services.AddSingleton<IOperationHistoryService, JsonOperationHistoryService>();
                 services.AddSingleton<IMoleEngineService, MoleEngineService>();
                 services.AddSingleton<ISafeDeletionService, RecycleBinDeletionService>();
+                services.AddSingleton<WindowsGpuPerformanceCounterProvider>();
+                services.AddSingleton<IGpuTelemetryProvider>(provider =>
+                    new GpuTelemetryBackoffProvider(provider.GetRequiredService<WindowsGpuPerformanceCounterProvider>()));
                 services.AddSingleton<ISystemTelemetryService, WindowsSystemTelemetryService>();
                 services.AddSingleton<ISystemTelemetryHistoryService, JsonSystemTelemetryHistoryService>();
                 services.AddSingleton<SystemTelemetrySamplerService>();

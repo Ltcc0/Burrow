@@ -29,6 +29,7 @@
     <Compile Include="..\..\Models\DiskTreemapRect.cs" Link="Production\Models\DiskTreemapRect.cs" />
     <Compile Include="..\..\Models\DiskUsageNode.cs" Link="Production\Models\DiskUsageNode.cs" />
     <Compile Include="..\..\Models\HistoryRangeDefinition.cs" Link="Production\Models\HistoryRangeDefinition.cs" />
+    <Compile Include="..\..\Models\GpuTelemetrySample.cs" Link="Production\Models\GpuTelemetrySample.cs" />
     <Compile Include="..\..\Models\InstalledApplication.cs" Link="Production\Models\InstalledApplication.cs" />
     <Compile Include="..\..\Models\InstallerCleanupCandidate.cs" Link="Production\Models\InstallerCleanupCandidate.cs" />
     <Compile Include="..\..\Models\LeftoverCandidate.cs" Link="Production\Models\LeftoverCandidate.cs" />
@@ -47,11 +48,13 @@
     <Compile Include="..\..\Services\DiskAnalyzerService.cs" Link="Production\Services\DiskAnalyzerService.cs" />
     <Compile Include="..\..\Services\DiskTreemapLayout.cs" Link="Production\Services\DiskTreemapLayout.cs" />
     <Compile Include="..\..\Services\HistoryRangeCatalog.cs" Link="Production\Services\HistoryRangeCatalog.cs" />
+    <Compile Include="..\..\Services\GpuTelemetryBackoffProvider.cs" Link="Production\Services\GpuTelemetryBackoffProvider.cs" />
     <Compile Include="..\..\Services\HttpServerSettingsPlanner.cs" Link="Production\Services\HttpServerSettingsPlanner.cs" />
     <Compile Include="..\..\Services\IDiskAnalyzerService.cs" Link="Production\Services\IDiskAnalyzerService.cs" />
     <Compile Include="..\..\Services\IInstalledApplicationService.cs" Link="Production\Services\IInstalledApplicationService.cs" />
     <Compile Include="..\..\Services\IInstallerCleanupService.cs" Link="Production\Services\IInstallerCleanupService.cs" />
     <Compile Include="..\..\Services\IApplicationSettingsService.cs" Link="Production\Services\IApplicationSettingsService.cs" />
+    <Compile Include="..\..\Services\IGpuTelemetryProvider.cs" Link="Production\Services\IGpuTelemetryProvider.cs" />
     <Compile Include="..\..\Services\IMoleEngineProbe.cs" Link="Production\Services\IMoleEngineProbe.cs" />
     <Compile Include="..\..\Services\IMoleEngineService.cs" Link="Production\Services\IMoleEngineService.cs" />
     <Compile Include="..\..\Services\IOperationHistoryService.cs" Link="Production\Services\IOperationHistoryService.cs" />
