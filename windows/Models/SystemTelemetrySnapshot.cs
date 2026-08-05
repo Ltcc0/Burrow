@@ -53,9 +53,27 @@ public sealed record SystemTelemetrySnapshot(
                 return null;
             }
 
-            var numeric = new string(GpuStatus
-                .Where(character => char.IsDigit(character) || character is '.' or '-')
-                .ToArray());
+            var percentMarker = GpuStatus.LastIndexOf('%');
+            if (percentMarker < 0)
+            {
+                return null;
+            }
+
+            var numericEnd = percentMarker;
+            while (numericEnd > 0 && char.IsWhiteSpace(GpuStatus[numericEnd - 1]))
+            {
+                numericEnd--;
+            }
+
+            var numericStart = numericEnd;
+            while (numericStart > 0 &&
+                (char.IsDigit(GpuStatus[numericStart - 1]) ||
+                 GpuStatus[numericStart - 1] is '.' or '-' or '+'))
+            {
+                numericStart--;
+            }
+
+            var numeric = GpuStatus[numericStart..numericEnd];
             return double.TryParse(numeric, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
                 ? Math.Clamp(parsed, 0, 100)
                 : null;

@@ -73,10 +73,13 @@ public sealed class GpuTelemetryBackoffProviderTests
     public void Snapshot_EffectiveGpuUsage_PreservesLegacyZeroAndUnavailableValues()
     {
         var zero = CreateSnapshot("3D 0.0%");
+        var nonZero = CreateSnapshot("3D 37.5%");
         var unavailable = CreateSnapshot("Unavailable");
 
         Assert.True(zero.IsGpuAvailable);
         Assert.Equal(0, zero.EffectiveGpuUsagePercent);
+        Assert.True(nonZero.IsGpuAvailable);
+        Assert.Equal(37.5, nonZero.EffectiveGpuUsagePercent);
         Assert.False(unavailable.IsGpuAvailable);
         Assert.Null(unavailable.EffectiveGpuUsagePercent);
     }
