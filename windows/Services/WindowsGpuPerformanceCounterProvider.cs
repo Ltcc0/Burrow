@@ -19,7 +19,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuTelemetryProvider
                 return GpuTelemetrySample.Unavailable("The GPU Engine performance-counter category is unavailable.");
             }
 
-            using var category = new PerformanceCounterCategory(CategoryName);
+            var category = new PerformanceCounterCategory(CategoryName);
             var instanceNames = category.GetInstanceNames()
                 .Where(name => name.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase))
                 .ToArray();
