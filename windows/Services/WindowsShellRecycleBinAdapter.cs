@@ -38,7 +38,7 @@ public sealed class WindowsShellRecycleBinAdapter : IRecycleBinAdapter
         IShellItem? item = null;
         try
         {
-            operation = (IFileOperation)new FileOperationComObject();
+            operation = (IFileOperation)(object)new FileOperationComObject();
             operation.SetOperationFlags(
                 FileOperationFlags.Silent |
                 FileOperationFlags.NoConfirmation |
