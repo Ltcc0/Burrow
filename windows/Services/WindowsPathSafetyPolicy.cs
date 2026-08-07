@@ -39,7 +39,7 @@ public sealed class WindowsPathSafetyPolicy : IWindowsPathSafetyPolicy
             return PathSafetyResult.Reject("invalid_scope", "The approved scope root could not be canonicalized.");
         }
 
-        if (IsDriveRoot(canonicalRoot) || IsUncPath(canonicalRoot))
+        if (IsUncPath(canonicalRoot) || IsDriveRoot(canonicalRoot))
         {
             return PathSafetyResult.Reject("unsafe_scope_root", "Drive and UNC roots cannot be deletion scopes.", canonicalScopeRoot: canonicalRoot);
         }
@@ -86,14 +86,14 @@ public sealed class WindowsPathSafetyPolicy : IWindowsPathSafetyPolicy
             return PathSafetyResult.Reject("canonicalization_failed", "The target or approved scope could not be canonicalized.");
         }
 
-        if (IsDriveRoot(canonicalPath))
-        {
-            return PathSafetyResult.Reject("drive_root", "Drive roots cannot be deleted.", canonicalPath, canonicalRoot);
-        }
-
         if (IsUncPath(canonicalPath))
         {
             return PathSafetyResult.Reject("unc_path", "UNC targets are not supported by the reversible deletion fallback.", canonicalPath, canonicalRoot);
+        }
+
+        if (IsDriveRoot(canonicalPath))
+        {
+            return PathSafetyResult.Reject("drive_root", "Drive roots cannot be deleted.", canonicalPath, canonicalRoot);
         }
 
         if (IsDriveRoot(canonicalRoot) || IsUncPath(canonicalRoot))
