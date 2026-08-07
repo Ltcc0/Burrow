@@ -32,7 +32,7 @@
     <Compile Include="..\..\Models\InstalledApplication.cs" Link="Production\Models\InstalledApplication.cs" />
     <Compile Include="..\..\Models\InstallerCleanupCandidate.cs" Link="Production\Models\InstallerCleanupCandidate.cs" />
     <Compile Include="..\..\Models\LeftoverCandidate.cs" Link="Production\Models\LeftoverCandidate.cs" />
-    <Compile Include="..\..\Models\LeftoverRemovalResult.cs" Link="Production\Models\LeftoverRemovalResult.cs" />
+    <Compile Include="..\..\Models\DestructiveDeletionModels.cs" Link="Production\Models\DestructiveDeletionModels.cs" />
     <Compile Include="..\..\Models\MoleCommandResult.cs" Link="Production\Models\MoleCommandResult.cs" />
     <Compile Include="..\..\Models\MoleEngineAvailability.cs" Link="Production\Models\MoleEngineAvailability.cs" />
     <Compile Include="..\..\Models\OperationHistoryEntry.cs" Link="Production\Models\OperationHistoryEntry.cs" />
@@ -57,6 +57,10 @@
     <Compile Include="..\..\Services\IOperationHistoryService.cs" Link="Production\Services\IOperationHistoryService.cs" />
     <Compile Include="..\..\Services\IPurgeArtifactService.cs" Link="Production\Services\IPurgeArtifactService.cs" />
     <Compile Include="..\..\Services\ISafeDeletionService.cs" Link="Production\Services\ISafeDeletionService.cs" />
+    <Compile Include="..\..\Services\IDeletionReceiptStore.cs" Link="Production\Services\IDeletionReceiptStore.cs" />
+    <Compile Include="..\..\Services\IRecycleBinAdapter.cs" Link="Production\Services\IRecycleBinAdapter.cs" />
+    <Compile Include="..\..\Services\IWindowsFileSystemInspector.cs" Link="Production\Services\IWindowsFileSystemInspector.cs" />
+    <Compile Include="..\..\Services\IWindowsPathSafetyPolicy.cs" Link="Production\Services\IWindowsPathSafetyPolicy.cs" />
     <Compile Include="..\..\Services\IStartupDiagnosticsService.cs" Link="Production\Services\IStartupDiagnosticsService.cs" />
     <Compile Include="..\..\Services\ISystemTelemetrySamplerService.cs" Link="Production\Services\ISystemTelemetrySamplerService.cs" />
     <Compile Include="..\..\Services\ISystemTelemetryService.cs" Link="Production\Services\ISystemTelemetryService.cs" />
@@ -65,6 +69,8 @@
     <Compile Include="..\..\Services\JsonOperationHistoryService.cs" Link="Production\Services\JsonOperationHistoryService.cs" />
     <Compile Include="..\..\Services\JsonSystemTelemetryHistoryService.cs" Link="Production\Services\JsonSystemTelemetryHistoryService.cs" />
     <Compile Include="..\..\Services\InstallerCleanupService.cs" Link="Production\Services\InstallerCleanupService.cs" />
+    <Compile Include="..\..\Services\DeletionBatchProcessor.cs" Link="Production\Services\DeletionBatchProcessor.cs" />
+    <Compile Include="..\..\Services\JsonDeletionReceiptStore.cs" Link="Production\Services\JsonDeletionReceiptStore.cs" />
     <Compile Include="..\..\Services\LocalMcpServerService.cs" Link="Production\Services\LocalMcpServerService.cs" />
     <Compile Include="..\..\Services\LocalStartupDiagnosticsService.cs" Link="Production\Services\LocalStartupDiagnosticsService.cs" />
     <Compile Include="..\..\Services\MoleEngineService.cs" Link="Production\Services\MoleEngineService.cs" />
@@ -78,5 +84,8 @@
     <Compile Include="..\..\Services\TrayHudStatusFormatter.cs" Link="Production\Services\TrayHudStatusFormatter.cs" />
     <Compile Include="..\..\Services\TrayIconTextFormatter.cs" Link="Production\Services\TrayIconTextFormatter.cs" />
     <Compile Include="..\..\Services\WindowsInstalledApplicationService.cs" Link="Production\Services\WindowsInstalledApplicationService.cs" />
+    <Compile Include="..\..\Services\WindowsFileSystemInspector.cs" Link="Production\Services\WindowsFileSystemInspector.cs" />
+    <Compile Include="..\..\Services\WindowsPathSafetyPolicy.cs" Link="Production\Services\WindowsPathSafetyPolicy.cs" />
+    <Compile Include="..\..\Services\WindowsShellRecycleBinAdapter.cs" Link="Production\Services\WindowsShellRecycleBinAdapter.cs" />
   </ItemGroup>
 </Project>
