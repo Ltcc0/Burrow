@@ -1,0 +1,48 @@
+{
+  "shortId": "BURROW-WINDOWS-SECRET-7",
+  "level": "fatal",
+  "count": "3",
+  "firstSeen": "2026-08-07T01:02:03.456Z",
+  "lastSeen": "2026-08-07T04:05:06Z",
+  "permalink": "https://henry-zhang-r7.sentry.io/issues/7639318005/?token=private-secret#event-identifier",
+  "title": "System failure for /Users/alice/private/customer.db",
+  "culprit": "run --api-key sk_live_secret --input /Users/alice/private.txt",
+  "metadata": {
+    "value": "alice@example.com invoked --password hunter2"
+  },
+  "message": "Authorization: Bearer sentry-secret-token",
+  "user": {
+    "username": "alice",
+    "email": "alice@example.com",
+    "ip_address": "203.0.113.42"
+  },
+  "request": {
+    "url": "https://localhost/private?token=browser-secret",
+    "env": {"HOME": "/Users/alice"}
+  },
+  "entries": [
+    {
+      "type": "exception",
+      "data": {
+        "values": [
+          {
+            "stacktrace": {
+              "frames": [
+                {
+                  "function": "deleteCustomerDatabase",
+                  "filename": "/Users/alice/Projects/Burrow/Secrets.swift",
+                  "lineNo": 42,
+                  "package": "/Applications/Burrow.app/Contents/MacOS/Burrow"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "tags": [
+    {"key": "command", "value": "rm -rf /Users/alice/private"},
+    {"key": "device_id", "value": "device-private-identifier"}
+  ]
+}
