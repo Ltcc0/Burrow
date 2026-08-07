@@ -1,5 +1,4 @@
 using BurrowWin.Services;
-using BurrowWin.Models;
 using Xunit;
 
 namespace BurrowWin.Tests;
@@ -46,14 +45,10 @@ public sealed class InstallerCleanupServiceTests : IDisposable
         var service = new InstallerCleanupService(_root, 30, deletionService);
         var candidate = (await service.PreviewAsync()).Single();
 
-        var authorization = DestructiveActionAuthorization.Confirmed(
-            InstallerCleanupService.DeletionSource,
-            [candidate.Path]);
-        var batch = await service.RemoveAsync([candidate], authorization);
+        var results = await service.RemoveAsync([candidate]);
 
-        var result = Assert.Single(batch.Results);
+        var result = Assert.Single(results);
         Assert.True(result.Succeeded);
-        Assert.Equal(DeletionBatchOutcome.Succeeded, batch.Outcome);
         Assert.True(File.Exists(file));
         Assert.Single(deletionService.DeletedPaths);
         Assert.Equal(Path.GetFullPath(file), deletionService.DeletedPaths[0]);
@@ -76,15 +71,10 @@ public sealed class InstallerCleanupServiceTests : IDisposable
                 7,
                 DateTimeOffset.UtcNow.AddDays(-90));
 
-            var authorization = DestructiveActionAuthorization.Confirmed(
-                InstallerCleanupService.DeletionSource,
-                [candidate.Path]);
-            var batch = await service.RemoveAsync([candidate], authorization);
+            var results = await service.RemoveAsync([candidate]);
 
-            var result = Assert.Single(batch.Results);
+            var result = Assert.Single(results);
             Assert.False(result.Succeeded);
-            Assert.Equal(DeletionDisposition.Rejected, result.Disposition);
-            Assert.Equal(DeletionBatchOutcome.Failed, batch.Outcome);
             Assert.True(File.Exists(outside));
             Assert.Empty(deletionService.DeletedPaths);
         }

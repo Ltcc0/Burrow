@@ -6,5 +6,5 @@ public interface IDeletionReceiptStore
 {
     string ReceiptFilePath { get; }
 
-    Task RecordAsync(DeletionReceipt receipt, CancellationToken cancellationToken = default);
+    Task AppendAsync(DeletionReceipt receipt, CancellationToken cancellationToken = default);
 }

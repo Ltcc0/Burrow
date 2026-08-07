@@ -13,7 +13,7 @@ public partial class PurgeViewModel : ViewModelBase
     private readonly IMoleEngineService _moleEngineService;
     private readonly IPurgeArtifactService _purgeArtifactService;
     private readonly IOperationHistoryService _operationHistoryService;
-    private CancellationTokenSource? _operationCts;
+    private CancellationTokenSource? _operationCancellation;
 
     public PurgeViewModel(
         IMoleEngineService moleEngineService,
@@ -45,11 +45,22 @@ public partial class PurgeViewModel : ViewModelBase
     private string engineSummary = "Mole Windows purge is interactive; BurrowWin previews project artifacts using the same Windows rules.";
 
     [ObservableProperty]
-    private string progressText = "project artifacts";
+    private string currentTarget = "No active target";
+
+    [ObservableProperty]
+    private int progressValue;
+
+    [ObservableProperty]
+    private int progressMaximum = 100;
+
+    [ObservableProperty]
+    private bool isProgressIndeterminate;
 
     public string OutputText => string.Join(Environment.NewLine, OutputLines);
 
-    public bool CanCancel => IsBusy && _operationCts is { IsCancellationRequested: false };
+    public bool CanStartOperation => !IsBusy;
+
+    public bool CanCancel => IsBusy && _operationCancellation is not null;
 
     [RelayCommand]
     public async Task PreviewAsync()
@@ -60,15 +71,18 @@ public partial class PurgeViewModel : ViewModelBase
         }
 
         var startedAt = Stopwatch.GetTimestamp();
-        var exitCode = 1;
+        var succeeded = false;
         var historySummary = "Purge preview did not finish";
 
-        var cancellationToken = BeginOperation("Scanning project artifacts...");
+        IsBusy = true;
         CanRemove = false;
         ClearProjects();
         OutputLines.Clear();
         OnPropertyChanged(nameof(OutputText));
         Summary = "Scanning project artifacts...";
+        CurrentTarget = "Scanning project roots";
+        IsProgressIndeterminate = true;
+        BeginOperation();
 
         try
         {
@@ -77,8 +91,9 @@ public partial class PurgeViewModel : ViewModelBase
                 ? $"Mole engine available at {availability.Path}; purge preview uses non-interactive Windows rules."
                 : $"{availability.Message} Purge preview still uses local Windows artifact rules.";
 
-            var projects = await _purgeArtifactService.PreviewAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            exitCode = 0;
+            var projects = await _purgeArtifactService.PreviewAsync(
+                cancellationToken: _operationCancellation!.Token).ConfigureAwait(false);
+            succeeded = true;
             historySummary = BuildPreviewSummary(projects);
 
             RunOnUiThread(() =>
@@ -96,8 +111,7 @@ public partial class PurgeViewModel : ViewModelBase
         }
         catch (OperationCanceledException)
         {
-            exitCode = 130;
-            historySummary = "Purge preview cancelled";
+            historySummary = "Purge preview cancelled before completion";
             RunOnUiThread(() => Summary = historySummary);
         }
         finally
@@ -105,85 +119,100 @@ public partial class PurgeViewModel : ViewModelBase
             await RecordHistoryAsync(
                 "purge-preview",
                 "project artifacts",
-                exitCode,
+                succeeded,
                 Stopwatch.GetElapsedTime(startedAt),
                 historySummary).ConfigureAwait(false);
 
-            RunOnUiThread(EndOperation);
+            RunOnUiThread(() =>
+            {
+                IsBusy = false;
+                IsProgressIndeterminate = false;
+                CurrentTarget = "No active target";
+                UpdateSelectionState();
+                EndOperation();
+            });
         }
     }
 
-    public DestructiveActionAuthorization CreateRemovalAuthorization()
+    public ConfirmedDeletionAuthorization ConfirmSelectedRemoval()
     {
-        var paths = Projects
-            .Where(project => project.IsSelected)
-            .SelectMany(project => project.Artifacts)
-            .Select(artifact => artifact.Path)
-            .ToArray();
-        return DestructiveActionAuthorization.Confirmed(PurgeArtifactService.DeletionSource, paths);
+        return _purgeArtifactService.ConfirmRemoval(
+            Projects.Where(project => project.IsSelected).ToList());
     }
 
-    public async Task RemoveAsync(DestructiveActionAuthorization authorization)
+    public async Task RemoveAsync(ConfirmedDeletionAuthorization authorization)
     {
-        ArgumentNullException.ThrowIfNull(authorization);
+        if (IsBusy)
+        {
+            return;
+        }
 
         var selectedProjects = Projects.Where(project => project.IsSelected).ToList();
-        if (selectedProjects.Count == 0 || IsBusy)
+        if (selectedProjects.Count == 0)
         {
             return;
         }
 
         var startedAt = Stopwatch.GetTimestamp();
-        var exitCode = 1;
         var historySummary = "Purge removal did not finish";
 
-        var cancellationToken = BeginOperation("Removing selected project artifacts...");
+        IsBusy = true;
         CanRemove = false;
         OutputLines.Clear();
         OnPropertyChanged(nameof(OutputText));
         Summary = "Removing selected project artifacts...";
+        BeginOperation();
+        IsProgressIndeterminate = false;
+        ProgressMaximum = 100;
+        ProgressValue = 0;
+        CurrentTarget = "Waiting to process the first selected artifact";
 
         try
         {
-            var progress = new Progress<DeletionProgress>(UpdateProgress);
-            var batch = await _purgeArtifactService
-                .RemoveAsync(selectedProjects, authorization, progress, cancellationToken)
-                .ConfigureAwait(false);
-            exitCode = ExitCodeFor(batch);
-            historySummary = BuildRemovalSummary(batch);
+            var progress = new Progress<DeletionProgress>(ApplyProgress);
+            var batch = await _purgeArtifactService.RemoveAsync(
+                selectedProjects,
+                authorization,
+                progress,
+                _operationCancellation!.Token).ConfigureAwait(false);
+            historySummary = BuildRemovalSummary(batch, "artifacts");
 
             RunOnUiThread(() =>
             {
-                foreach (var result in batch.Results)
+                foreach (var result in batch.ItemResults)
                 {
-                    var prefix = result.Disposition.ToString().ToLowerInvariant();
-                    OutputLines.Add($"{prefix}: {result.Path} ({SystemTelemetryFormatter.Bytes(result.SizeBytes)}) {result.Message}");
+                    OutputLines.Add($"{result.Status}: {result.Path} {result.Message}");
                 }
 
                 Summary = historySummary;
                 OnPropertyChanged(nameof(OutputText));
             });
+
+            await RecordBatchHistoryAsync(
+                "purge-remove",
+                $"{selectedProjects.Count} selected projects",
+                batch,
+                Stopwatch.GetElapsedTime(startedAt),
+                historySummary).ConfigureAwait(false);
         }
         finally
         {
-            await RecordHistoryAsync(
-                "purge-remove",
-                $"{selectedProjects.Count} selected projects",
-                exitCode,
-                Stopwatch.GetElapsedTime(startedAt),
-                historySummary).ConfigureAwait(false);
-
-            RunOnUiThread(EndOperation);
+            RunOnUiThread(() =>
+            {
+                IsBusy = false;
+                IsProgressIndeterminate = false;
+                CurrentTarget = "No active target";
+                UpdateSelectionState();
+                EndOperation();
+            });
         }
     }
 
-    [RelayCommand(CanExecute = nameof(CanCancel))]
+    [RelayCommand]
     public void Cancel()
     {
-        _operationCts?.Cancel();
-        ProgressText = "Cancelling after the current item...";
-        OnPropertyChanged(nameof(CanCancel));
-        CancelCommand.NotifyCanExecuteChanged();
+        _operationCancellation?.Cancel();
+        Summary = "Cancellation requested; waiting for the active item to finish...";
     }
 
     [RelayCommand]
@@ -267,60 +296,44 @@ public partial class PurgeViewModel : ViewModelBase
         return $"{projects.Count} projects - {totalArtifacts} artifacts - {SystemTelemetryFormatter.Bytes(totalBytes)}";
     }
 
-    private CancellationToken BeginOperation(string progressText)
+    private static string BuildRemovalSummary(DeletionBatchResult batch, string noun)
     {
-        _operationCts?.Dispose();
-        _operationCts = new CancellationTokenSource();
-        ProgressText = progressText;
-        IsBusy = true;
+        return $"{batch.Outcome}: recycled {batch.RecycledCount}/{batch.TotalSelectedItems} {noun}, " +
+               $"absent {batch.AlreadyAbsentCount}, rejected {batch.RejectedCount}, failed {batch.FailedCount}, " +
+               $"recycled {SystemTelemetryFormatter.Bytes(batch.RecycledBytes)} (operation {batch.OperationId})";
+    }
+
+    private void ApplyProgress(DeletionProgress progress)
+    {
+        RunOnUiThread(() =>
+        {
+            ProgressMaximum = 100;
+            ProgressValue = Math.Clamp(progress.CompletionPercent, 0, 100);
+            CurrentTarget = progress.CurrentPath ?? "Waiting for next target";
+        });
+    }
+
+    private void BeginOperation()
+    {
+        _operationCancellation?.Dispose();
+        _operationCancellation = new CancellationTokenSource();
         OnPropertyChanged(nameof(CanCancel));
         CancelCommand.NotifyCanExecuteChanged();
-        return _operationCts.Token;
     }
 
     private void EndOperation()
     {
-        _operationCts?.Dispose();
-        _operationCts = null;
-        IsBusy = false;
-        ProgressText = "project artifacts";
+        _operationCancellation?.Dispose();
+        _operationCancellation = null;
         OnPropertyChanged(nameof(CanCancel));
         CancelCommand.NotifyCanExecuteChanged();
-        UpdateSelectionState();
     }
 
-    private void UpdateProgress(DeletionProgress progress)
+    partial void OnIsBusyChanged(bool value)
     {
-        RunOnUiThread(() =>
-        {
-            ProgressText = progress.TotalCount == 0
-                ? "No selected artifacts"
-                : $"{progress.ProcessedCount}/{progress.TotalCount} processed · {progress.RecycledCount} recycled";
-        });
-    }
-
-    private static int ExitCodeFor(DeletionBatchResult batch)
-    {
-        return batch.Outcome switch
-        {
-            DeletionBatchOutcome.Succeeded => 0,
-            DeletionBatchOutcome.Cancelled => 130,
-            DeletionBatchOutcome.PartialSuccess => 2,
-            _ => 1
-        };
-    }
-
-    private static string BuildRemovalSummary(DeletionBatchResult batch)
-    {
-        var prefix = batch.Outcome switch
-        {
-            DeletionBatchOutcome.Succeeded => "Completed",
-            DeletionBatchOutcome.Cancelled => "Cancelled",
-            DeletionBatchOutcome.PartialSuccess => "Partially completed",
-            _ => "Failed"
-        };
-        return $"{prefix}: {batch.RecycledCount} recycled, {batch.AlreadyAbsentCount} already absent, " +
-               $"{batch.RejectedCount} rejected, {batch.FailedCount} failed · {SystemTelemetryFormatter.Bytes(batch.RecycledBytes)}";
+        OnPropertyChanged(nameof(CanStartOperation));
+        OnPropertyChanged(nameof(CanCancel));
+        CancelCommand.NotifyCanExecuteChanged();
     }
 
     private void AppendOutput(string line)
@@ -335,7 +348,7 @@ public partial class PurgeViewModel : ViewModelBase
     private async Task RecordHistoryAsync(
         string operation,
         string arguments,
-        int exitCode,
+        bool succeeded,
         TimeSpan duration,
         string historySummary)
     {
@@ -344,10 +357,46 @@ public partial class PurgeViewModel : ViewModelBase
             "burrowwin",
             operation,
             arguments,
-            exitCode,
-            exitCode == 0,
+            succeeded ? 0 : 1,
+            succeeded,
             (long)duration.TotalMilliseconds,
             historySummary);
+
+        try
+        {
+            await _operationHistoryService.RecordAsync(entry).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private async Task RecordBatchHistoryAsync(
+        string operation,
+        string arguments,
+        DeletionBatchResult batch,
+        TimeSpan duration,
+        string historySummary)
+    {
+        var entry = new OperationHistoryEntry(
+            DateTimeOffset.UtcNow,
+            "burrowwin",
+            operation,
+            arguments,
+            batch.ExitCode,
+            batch.Succeeded,
+            (long)duration.TotalMilliseconds,
+            historySummary,
+            batch.Outcome,
+            batch.OperationId,
+            batch.RecycledCount,
+            batch.AlreadyAbsentCount,
+            batch.RejectedCount,
+            batch.FailedCount,
+            batch.ProcessedCount,
+            batch.TotalSelectedItems,
+            batch.RecycledBytes,
+            batch.Cancelled);
 
         try
         {

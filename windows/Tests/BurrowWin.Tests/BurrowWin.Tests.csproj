@@ -23,11 +23,6 @@
 
   <ItemGroup>
     <Compile Include="..\..\Models\CleanupPreviewItem.cs" Link="Production\Models\CleanupPreviewItem.cs" />
-    <Compile Include="..\..\Models\DeletionBatchResult.cs" Link="Production\Models\DeletionBatchResult.cs" />
-    <Compile Include="..\..\Models\DeletionDisposition.cs" Link="Production\Models\DeletionDisposition.cs" />
-    <Compile Include="..\..\Models\DeletionProgress.cs" Link="Production\Models\DeletionProgress.cs" />
-    <Compile Include="..\..\Models\DeletionReceipt.cs" Link="Production\Models\DeletionReceipt.cs" />
-    <Compile Include="..\..\Models\DestructiveActionAuthorization.cs" Link="Production\Models\DestructiveActionAuthorization.cs" />
     <Compile Include="..\..\Models\BurrowEnvelope.cs" Link="Production\Models\BurrowEnvelope.cs" />
     <Compile Include="..\..\Models\BurrowSettings.cs" Link="Production\Models\BurrowSettings.cs" />
     <Compile Include="..\..\Models\DiskAnalysisOptions.cs" Link="Production\Models\DiskAnalysisOptions.cs" />
@@ -43,7 +38,6 @@
     <Compile Include="..\..\Models\OperationHistoryEntry.cs" Link="Production\Models\OperationHistoryEntry.cs" />
     <Compile Include="..\..\Models\PurgeArtifactCandidate.cs" Link="Production\Models\PurgeArtifactCandidate.cs" />
     <Compile Include="..\..\Models\PurgeProjectCandidate.cs" Link="Production\Models\PurgeProjectCandidate.cs" />
-    <Compile Include="..\..\Models\SafeDeletionRequest.cs" Link="Production\Models\SafeDeletionRequest.cs" />
     <Compile Include="..\..\Models\ProcessTelemetry.cs" Link="Production\Models\ProcessTelemetry.cs" />
     <Compile Include="..\..\Models\ProcessUsageSummary.cs" Link="Production\Models\ProcessUsageSummary.cs" />
     <Compile Include="..\..\Models\SystemTelemetrySnapshot.cs" Link="Production\Models\SystemTelemetrySnapshot.cs" />
@@ -58,20 +52,16 @@
     <Compile Include="..\..\Services\IInstalledApplicationService.cs" Link="Production\Services\IInstalledApplicationService.cs" />
     <Compile Include="..\..\Services\IInstallerCleanupService.cs" Link="Production\Services\IInstallerCleanupService.cs" />
     <Compile Include="..\..\Services\IApplicationSettingsService.cs" Link="Production\Services\IApplicationSettingsService.cs" />
-    <Compile Include="..\..\Services\IDeletionReceiptStore.cs" Link="Production\Services\IDeletionReceiptStore.cs" />
     <Compile Include="..\..\Services\IMoleEngineProbe.cs" Link="Production\Services\IMoleEngineProbe.cs" />
     <Compile Include="..\..\Services\IMoleEngineService.cs" Link="Production\Services\IMoleEngineService.cs" />
     <Compile Include="..\..\Services\IOperationHistoryService.cs" Link="Production\Services\IOperationHistoryService.cs" />
     <Compile Include="..\..\Services\IPurgeArtifactService.cs" Link="Production\Services\IPurgeArtifactService.cs" />
-    <Compile Include="..\..\Services\IRecycleBinBackend.cs" Link="Production\Services\IRecycleBinBackend.cs" />
     <Compile Include="..\..\Services\ISafeDeletionService.cs" Link="Production\Services\ISafeDeletionService.cs" />
     <Compile Include="..\..\Services\IStartupDiagnosticsService.cs" Link="Production\Services\IStartupDiagnosticsService.cs" />
     <Compile Include="..\..\Services\ISystemTelemetrySamplerService.cs" Link="Production\Services\ISystemTelemetrySamplerService.cs" />
     <Compile Include="..\..\Services\ISystemTelemetryService.cs" Link="Production\Services\ISystemTelemetryService.cs" />
     <Compile Include="..\..\Services\ISystemTelemetryHistoryService.cs" Link="Production\Services\ISystemTelemetryHistoryService.cs" />
-    <Compile Include="..\..\Services\IWindowsPathSafetyPolicy.cs" Link="Production\Services\IWindowsPathSafetyPolicy.cs" />
     <Compile Include="..\..\Services\JsonApplicationSettingsService.cs" Link="Production\Services\JsonApplicationSettingsService.cs" />
-    <Compile Include="..\..\Services\JsonDeletionReceiptStore.cs" Link="Production\Services\JsonDeletionReceiptStore.cs" />
     <Compile Include="..\..\Services\JsonOperationHistoryService.cs" Link="Production\Services\JsonOperationHistoryService.cs" />
     <Compile Include="..\..\Services\JsonSystemTelemetryHistoryService.cs" Link="Production\Services\JsonSystemTelemetryHistoryService.cs" />
     <Compile Include="..\..\Services\InstallerCleanupService.cs" Link="Production\Services\InstallerCleanupService.cs" />
@@ -82,14 +72,11 @@
     <Compile Include="..\..\Services\ProcessUsageAggregator.cs" Link="Production\Services\ProcessUsageAggregator.cs" />
     <Compile Include="..\..\Services\PurgeArtifactService.cs" Link="Production\Services\PurgeArtifactService.cs" />
     <Compile Include="..\..\Services\RecycleBinDeletionService.cs" Link="Production\Services\RecycleBinDeletionService.cs" />
-    <Compile Include="..\..\Services\SafeDeletionBatchRunner.cs" Link="Production\Services\SafeDeletionBatchRunner.cs" />
     <Compile Include="..\..\Services\SystemMoleEngineProbe.cs" Link="Production\Services\SystemMoleEngineProbe.cs" />
     <Compile Include="..\..\Services\SystemTelemetrySamplerService.cs" Link="Production\Services\SystemTelemetrySamplerService.cs" />
     <Compile Include="..\..\Services\SystemTelemetryFormatter.cs" Link="Production\Services\SystemTelemetryFormatter.cs" />
     <Compile Include="..\..\Services\TrayHudStatusFormatter.cs" Link="Production\Services\TrayHudStatusFormatter.cs" />
     <Compile Include="..\..\Services\TrayIconTextFormatter.cs" Link="Production\Services\TrayIconTextFormatter.cs" />
-    <Compile Include="..\..\Services\VisualBasicRecycleBinBackend.cs" Link="Production\Services\VisualBasicRecycleBinBackend.cs" />
     <Compile Include="..\..\Services\WindowsInstalledApplicationService.cs" Link="Production\Services\WindowsInstalledApplicationService.cs" />
-    <Compile Include="..\..\Services\WindowsPathSafetyPolicy.cs" Link="Production\Services\WindowsPathSafetyPolicy.cs" />
   </ItemGroup>
 </Project>

@@ -135,14 +135,10 @@ public sealed class WindowsInstalledApplicationServiceTests
             var deletionService = new RecordingSafeDeletionService();
             var service = new WindowsInstalledApplicationService(deletionService);
 
-            var authorization = DestructiveActionAuthorization.Confirmed(
-                WindowsInstalledApplicationService.LeftoverDeletionSource,
-                [target]);
-            var batch = await service.RemoveLeftoversAsync([new("Test", target, 4)], authorization);
+            var results = await service.RemoveLeftoversAsync([new("Test", target, 4)]);
 
-            var result = Assert.Single(batch.Results);
+            var result = Assert.Single(results);
             Assert.True(result.Succeeded, result.Message);
-            Assert.Equal(DeletionBatchOutcome.Succeeded, batch.Outcome);
             Assert.Single(deletionService.DeletedPaths);
             Assert.Equal(Path.GetFullPath(target), deletionService.DeletedPaths[0]);
         }

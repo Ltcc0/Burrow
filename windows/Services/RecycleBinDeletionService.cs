@@ -1,4 +1,3 @@
-using System.Security;
 using BurrowWin.Models;
 
 namespace BurrowWin.Services;
@@ -6,221 +5,244 @@ namespace BurrowWin.Services;
 public sealed class RecycleBinDeletionService : ISafeDeletionService
 {
     private readonly IWindowsPathSafetyPolicy _pathSafetyPolicy;
-    private readonly IRecycleBinBackend _recycleBinBackend;
+    private readonly IWindowsFileSystemInspector _fileSystem;
+    private readonly IRecycleBinAdapter _recycleBin;
     private readonly IDeletionReceiptStore _receiptStore;
-    private readonly Func<DateTimeOffset> _utcNow;
 
     public RecycleBinDeletionService()
         : this(
             new WindowsPathSafetyPolicy(),
-            new VisualBasicRecycleBinBackend(),
-            new JsonDeletionReceiptStore(),
-            () => DateTimeOffset.UtcNow)
+            new WindowsFileSystemInspector(),
+            new WindowsShellRecycleBinAdapter(),
+            new JsonDeletionReceiptStore())
     {
     }
 
     public RecycleBinDeletionService(
         IWindowsPathSafetyPolicy pathSafetyPolicy,
-        IRecycleBinBackend recycleBinBackend,
-        IDeletionReceiptStore receiptStore,
-        Func<DateTimeOffset>? utcNow = null)
+        IWindowsFileSystemInspector fileSystem,
+        IRecycleBinAdapter recycleBin,
+        IDeletionReceiptStore receiptStore)
     {
-        _pathSafetyPolicy = pathSafetyPolicy ?? throw new ArgumentNullException(nameof(pathSafetyPolicy));
-        _recycleBinBackend = recycleBinBackend ?? throw new ArgumentNullException(nameof(recycleBinBackend));
-        _receiptStore = receiptStore ?? throw new ArgumentNullException(nameof(receiptStore));
-        _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        _pathSafetyPolicy = pathSafetyPolicy;
+        _fileSystem = fileSystem;
+        _recycleBin = recycleBin;
+        _receiptStore = receiptStore;
     }
 
-    public async Task<LeftoverRemovalResult> DeleteFileOrDirectoryAsync(
+    public async Task<SafeDeletionResult> DeleteAsync(
         SafeDeletionRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        var candidate = request.Candidate;
 
-        LeftoverRemovalResult result;
+        if (!request.Authorization.Authorizes(request.OperationId, candidate))
+        {
+            return await CompleteAsync(request, null, SafeDeletionStatus.Rejected,
+                "Explicit confirmation does not authorize this exact candidate.", null).ConfigureAwait(false);
+        }
+
+        var safety = _pathSafetyPolicy.Validate(candidate.OriginalPath, candidate.ExpectedScopeRoot);
+        if (!safety.IsSafe)
+        {
+            return await CompleteAsync(request, safety.CanonicalPath, SafeDeletionStatus.Rejected,
+                safety.Message, null).ConfigureAwait(false);
+        }
+
+        if (!string.Equals(safety.CanonicalPath, request.CanonicalPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return await CompleteAsync(request, safety.CanonicalPath, SafeDeletionStatus.Rejected,
+                "The canonical target changed after preview.", null).ConfigureAwait(false);
+        }
+
+        if (!request.FlowValidation.IsAllowed)
+        {
+            return await CompleteAsync(request, safety.CanonicalPath, SafeDeletionStatus.Rejected,
+                request.FlowValidation.Message, request.FlowValidation.ObservedSizeBytes).ConfigureAwait(false);
+        }
+
+        var target = safety.TargetInfo ?? _fileSystem.Inspect(safety.CanonicalPath!);
+        if (!target.Exists)
+        {
+            return await CompleteAsync(request, safety.CanonicalPath, SafeDeletionStatus.AlreadyAbsent,
+                "Path was already absent; no item was removed and no bytes were freed.", null).ConfigureAwait(false);
+        }
+
+        if (target.ItemType != candidate.ItemType)
+        {
+            return await CompleteAsync(request, safety.CanonicalPath, SafeDeletionStatus.Rejected,
+                "The candidate type changed after preview.", target.SizeBytes).ConfigureAwait(false);
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return await CompleteAsync(request, safety.CanonicalPath, SafeDeletionStatus.Cancelled,
+                "Cancellation was requested before the Recycle Bin operation started.",
+                request.FlowValidation.ObservedSizeBytes ?? target.SizeBytes).ConfigureAwait(false);
+        }
+
+        // Final fail-closed validation immediately before handing the path to the Shell.
+        var finalSafety = _pathSafetyPolicy.Validate(candidate.OriginalPath, candidate.ExpectedScopeRoot);
+        if (!finalSafety.IsSafe ||
+            !string.Equals(finalSafety.CanonicalPath, request.CanonicalPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.Rejected,
+                finalSafety.IsSafe ? "The canonical target changed immediately before deletion." : finalSafety.Message,
+                request.FlowValidation.ObservedSizeBytes).ConfigureAwait(false);
+        }
+
+        var finalTarget = finalSafety.TargetInfo ?? _fileSystem.Inspect(finalSafety.CanonicalPath!);
+        if (!finalTarget.Exists)
+        {
+            return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.AlreadyAbsent,
+                "Path became absent before deletion; no item was removed and no bytes were freed.", null).ConfigureAwait(false);
+        }
+
+        if (finalTarget.ItemType != candidate.ItemType)
+        {
+            return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.Rejected,
+                "The candidate type changed immediately before deletion.", finalTarget.SizeBytes).ConfigureAwait(false);
+        }
+
+        long finalObservedSize;
         try
         {
-            if (cancellationToken.IsCancellationRequested)
+            if (!_fileSystem.TryMeasureSize(finalSafety.CanonicalPath!, cancellationToken, out finalObservedSize))
             {
-                result = CreateResult(request, DeletionDisposition.Cancelled, "Deletion was cancelled before this item started.");
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
+                return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.Rejected,
+                    "The candidate could not be measured safely immediately before deletion.",
+                    finalTarget.SizeBytes).ConfigureAwait(false);
             }
+        }
+        catch (OperationCanceledException)
+        {
+            return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.Cancelled,
+                "Cancellation was requested while performing final candidate validation.",
+                finalTarget.SizeBytes).ConfigureAwait(false);
+        }
 
-            if (!request.BusinessRuleSatisfied)
-            {
-                result = CreateResult(
-                    request,
-                    DeletionDisposition.Rejected,
-                    request.BusinessRuleFailure ?? "Deletion target no longer satisfies its fallback scope rules.");
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
-            }
+        var latestSafety = _pathSafetyPolicy.Validate(candidate.OriginalPath, candidate.ExpectedScopeRoot);
+        if (!latestSafety.IsSafe ||
+            !string.Equals(latestSafety.CanonicalPath, request.CanonicalPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return await CompleteAsync(request, latestSafety.CanonicalPath, SafeDeletionStatus.Rejected,
+                latestSafety.IsSafe ? "The canonical target changed during final validation." : latestSafety.Message,
+                finalObservedSize).ConfigureAwait(false);
+        }
 
-            var safety = _pathSafetyPolicy.Evaluate(request.Path, request.ScopeRoot);
-            if (!safety.IsSafe || string.IsNullOrWhiteSpace(safety.CanonicalPath))
-            {
-                result = CreateResult(request, DeletionDisposition.Rejected, safety.Message, safety.CanonicalPath);
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
-            }
+        var latestTarget = latestSafety.TargetInfo ?? _fileSystem.Inspect(finalSafety.CanonicalPath!);
+        if (!latestTarget.Exists)
+        {
+            return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.AlreadyAbsent,
+                "Path became absent during final validation; no item was removed and no bytes were freed.", null).ConfigureAwait(false);
+        }
 
-            var canonicalPath = safety.CanonicalPath;
-            var now = _utcNow();
-            if (!request.Authorization.Allows(request.Source, canonicalPath, now))
-            {
-                result = CreateResult(
-                    request,
-                    DeletionDisposition.Rejected,
-                    "Deletion authorization is missing, expired, for a different action, or does not include this exact path.",
-                    canonicalPath);
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
-            }
+        if (latestTarget.IsReparsePoint || latestTarget.ItemType != candidate.ItemType)
+        {
+            return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.Rejected,
+                "The candidate type or reparse state changed immediately before deletion.",
+                latestTarget.SizeBytes).ConfigureAwait(false);
+        }
 
-            var existsAsDirectory = Directory.Exists(canonicalPath);
-            var existsAsFile = File.Exists(canonicalPath);
-            if (!existsAsDirectory && !existsAsFile)
-            {
-                result = CreateResult(
-                    request,
-                    DeletionDisposition.AlreadyAbsent,
-                    "Path was already absent; no bytes were reclaimed.",
-                    canonicalPath);
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
-            }
+        if (request.FlowValidation.ObservedSizeBytes.HasValue &&
+            finalObservedSize != request.FlowValidation.ObservedSizeBytes.Value)
+        {
+            return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.Rejected,
+                "The candidate changed immediately before deletion; rescan before removal.",
+                finalObservedSize).ConfigureAwait(false);
+        }
 
-            if (!MatchesExpectedItemType(request.ExpectedItemType, existsAsDirectory, existsAsFile))
-            {
-                result = CreateResult(
-                    request,
-                    DeletionDisposition.Rejected,
-                    "Deletion target type changed after preview.",
-                    canonicalPath);
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
-            }
+        if (candidate.PreviewLastWriteTimeUtc.HasValue &&
+            latestTarget.LastWriteTimeUtc?.UtcDateTime != candidate.PreviewLastWriteTimeUtc.Value.UtcDateTime)
+        {
+            return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.Rejected,
+                "The candidate timestamp changed immediately before deletion; rescan before removal.",
+                finalObservedSize).ConfigureAwait(false);
+        }
 
-            // Re-run the full policy at the last boundary before entering the Shell backend.
-            safety = _pathSafetyPolicy.Evaluate(canonicalPath, request.ScopeRoot);
-            if (!safety.IsSafe || string.IsNullOrWhiteSpace(safety.CanonicalPath))
-            {
-                result = CreateResult(request, DeletionDisposition.Rejected, safety.Message, canonicalPath);
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
-            }
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return await CompleteAsync(request, finalSafety.CanonicalPath, SafeDeletionStatus.Cancelled,
+                "Cancellation was requested before the Recycle Bin operation started.",
+                finalObservedSize).ConfigureAwait(false);
+        }
 
-            canonicalPath = safety.CanonicalPath;
-            existsAsDirectory = Directory.Exists(canonicalPath);
-            existsAsFile = File.Exists(canonicalPath);
-            if (!existsAsDirectory && !existsAsFile)
-            {
-                result = CreateResult(
-                    request,
-                    DeletionDisposition.AlreadyAbsent,
-                    "Path disappeared before the Recycle Bin operation started; no bytes were reclaimed.",
-                    canonicalPath);
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
-            }
-
-            if (!MatchesExpectedItemType(request.ExpectedItemType, existsAsDirectory, existsAsFile))
-            {
-                result = CreateResult(
-                    request,
-                    DeletionDisposition.Rejected,
-                    "Deletion target type changed at the final safety boundary.",
-                    canonicalPath);
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
-            }
-
-            if (!request.Authorization.Allows(request.Source, canonicalPath, _utcNow()))
-            {
-                result = CreateResult(
-                    request,
-                    DeletionDisposition.Rejected,
-                    "Deletion authorization expired or no longer matches at the final safety boundary.",
-                    canonicalPath);
-                return await RecordReceiptAsync(request, result).ConfigureAwait(false);
-            }
-
-            var backendResult = await _recycleBinBackend
-                .RecycleAsync(canonicalPath, cancellationToken)
+        RecycleBinAdapterResult backendResult;
+        try
+        {
+            // Intentionally not cancellable once started: wait for the observable Shell outcome,
+            // then the batch stops before scheduling any later target.
+            backendResult = await _recycleBin.RecycleAsync(finalSafety.CanonicalPath!, candidate.ItemType)
                 .ConfigureAwait(false);
-            result = backendResult.Succeeded
-                ? new LeftoverRemovalResult(
-                    request.Path,
-                    DeletionDisposition.Recycled,
-                    backendResult.Message,
-                    request.SizeBytes,
-                    request.Authorization.OperationId,
-                    canonicalPath,
-                    _utcNow(),
-                    backendResult.RecoveryLocator,
-                    !string.IsNullOrWhiteSpace(backendResult.RecoveryLocator))
-                : CreateResult(request, DeletionDisposition.Failed, backendResult.Message, canonicalPath);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException or OperationCanceledException or ArgumentException or NotSupportedException)
+        catch (Exception ex)
         {
-            result = CreateResult(
-                request,
-                ex is OperationCanceledException ? DeletionDisposition.Cancelled : DeletionDisposition.Failed,
-                ex.Message);
+            backendResult = new RecycleBinAdapterResult(false, ex.Message);
         }
 
-        return await RecordReceiptAsync(request, result).ConfigureAwait(false);
+        var status = backendResult.Succeeded ? SafeDeletionStatus.Recycled : SafeDeletionStatus.Failed;
+        return await CompleteAsync(
+            request,
+            finalSafety.CanonicalPath,
+            status,
+            backendResult.Message,
+            finalObservedSize,
+            backendResult.RecoveryLocator,
+            backendResult.ExactRecoveryLocatorAvailable).ConfigureAwait(false);
     }
 
-    private static bool MatchesExpectedItemType(string? expectedItemType, bool isDirectory, bool isFile)
-    {
-        if (string.IsNullOrWhiteSpace(expectedItemType))
-        {
-            return true;
-        }
-
-        return expectedItemType.Equals("Directory", StringComparison.OrdinalIgnoreCase)
-            ? isDirectory
-            : expectedItemType.Equals("File", StringComparison.OrdinalIgnoreCase)
-                ? isFile
-                : true;
-    }
-
-    private static LeftoverRemovalResult CreateResult(
+    private async Task<SafeDeletionResult> CompleteAsync(
         SafeDeletionRequest request,
-        DeletionDisposition disposition,
+        string? canonicalPath,
+        SafeDeletionStatus status,
         string message,
-        string? canonicalPath = null)
+        long? observedSizeBytes,
+        string? recoveryLocator = null,
+        bool exactRecoveryLocatorAvailable = false)
     {
-        return new LeftoverRemovalResult(
-            request.Path,
-            disposition,
-            message,
-            request.SizeBytes,
-            request.Authorization.OperationId,
-            canonicalPath);
-    }
-
-    private async Task<LeftoverRemovalResult> RecordReceiptAsync(
-        SafeDeletionRequest request,
-        LeftoverRemovalResult result)
-    {
+        var recordedAt = DateTimeOffset.UtcNow;
         var receipt = new DeletionReceipt(
-            request.Authorization.OperationId,
-            _utcNow(),
-            request.Source,
-            request.Path,
-            result.CanonicalPath,
-            request.ExpectedItemType,
-            request.SizeBytes,
-            result.Disposition,
-            result.Message,
-            result.RecoveryLocator,
-            result.RecoveryLocatorAvailable);
+            Guid.NewGuid().ToString("N"),
+            request.OperationId,
+            request.Candidate.OriginalPath,
+            canonicalPath,
+            request.Candidate.ItemType,
+            request.Candidate.ExpectedSizeBytes,
+            observedSizeBytes,
+            status,
+            recordedAt,
+            status == SafeDeletionStatus.Recycled ? recordedAt : null,
+            recoveryLocator,
+            exactRecoveryLocatorAvailable,
+            status is SafeDeletionStatus.Rejected or SafeDeletionStatus.Failed or SafeDeletionStatus.Cancelled ? message : null,
+            request.Candidate.SourceFlow,
+            request.Candidate.CandidateCategory);
 
         try
         {
-            await _receiptStore.RecordAsync(receipt, CancellationToken.None).ConfigureAwait(false);
-            return result;
+            await _receiptStore.AppendAsync(receipt, CancellationToken.None).ConfigureAwait(false);
+            return new SafeDeletionResult(
+                request.Candidate.OriginalPath,
+                canonicalPath,
+                status,
+                message,
+                request.Candidate.ExpectedSizeBytes,
+                observedSizeBytes,
+                receipt);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+        catch (Exception ex)
         {
-            return result with
-            {
-                Message = $"{result.Message} Recovery receipt could not be recorded ({ex.GetType().Name})."
-            };
+            return new SafeDeletionResult(
+                request.Candidate.OriginalPath,
+                canonicalPath,
+                status,
+                $"{message} Receipt persistence failed: {ex.Message}",
+                request.Candidate.ExpectedSizeBytes,
+                observedSizeBytes,
+                receipt,
+                false,
+                ex.Message);
         }
     }
 }

@@ -273,13 +273,11 @@ public sealed class LocalMcpServerServiceTests
             return Task.FromResult(new MoleCommandResult(0, "ok", string.Empty, false, TimeSpan.Zero));
         }
 
-        public Task<DeletionBatchResult> RemoveLeftoversAsync(
+        public Task<IReadOnlyList<LeftoverRemovalResult>> RemoveLeftoversAsync(
             IEnumerable<LeftoverCandidate> leftovers,
-            DestructiveActionAuthorization authorization,
-            IProgress<DeletionProgress>? progress = null,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(DeletionBatchResult.Empty(authorization));
+            return Task.FromResult<IReadOnlyList<LeftoverRemovalResult>>([]);
         }
     }
 
@@ -317,13 +315,11 @@ public sealed class LocalMcpServerServiceTests
             return Task.FromResult(_projects);
         }
 
-        public Task<DeletionBatchResult> RemoveAsync(
+        public Task<IReadOnlyList<LeftoverRemovalResult>> RemoveAsync(
             IReadOnlyList<PurgeProjectCandidate> projects,
-            DestructiveActionAuthorization authorization,
-            IProgress<DeletionProgress>? progress = null,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(DeletionBatchResult.Empty(authorization));
+            return Task.FromResult<IReadOnlyList<LeftoverRemovalResult>>([]);
         }
     }
 
@@ -353,13 +349,11 @@ public sealed class LocalMcpServerServiceTests
             return Task.FromResult(_candidates);
         }
 
-        public Task<DeletionBatchResult> RemoveAsync(
+        public Task<IReadOnlyList<LeftoverRemovalResult>> RemoveAsync(
             IReadOnlyList<InstallerCleanupCandidate> candidates,
-            DestructiveActionAuthorization authorization,
-            IProgress<DeletionProgress>? progress = null,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(DeletionBatchResult.Empty(authorization));
+            return Task.FromResult<IReadOnlyList<LeftoverRemovalResult>>([]);
         }
     }
 

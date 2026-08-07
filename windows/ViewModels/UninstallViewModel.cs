@@ -15,7 +15,7 @@ public partial class UninstallViewModel : ViewModelBase
     private readonly IMoleEngineService _moleEngineService;
     private readonly IInstalledApplicationService _installedApplicationService;
     private readonly List<InstalledApplication> _allApplications = [];
-    private CancellationTokenSource? _removalCts;
+    private CancellationTokenSource? _operationCancellation;
 
     public UninstallViewModel(
         IMoleEngineService moleEngineService,
@@ -59,7 +59,16 @@ public partial class UninstallViewModel : ViewModelBase
     private string appsTab = AppsTabUninstall;
 
     [ObservableProperty]
-    private string progressText = "installed applications";
+    private string currentTarget = "No active target";
+
+    [ObservableProperty]
+    private int progressValue;
+
+    [ObservableProperty]
+    private int progressMaximum = 100;
+
+    [ObservableProperty]
+    private bool isProgressIndeterminate;
 
     public string OutputText => string.Join(Environment.NewLine, OutputLines);
 
@@ -72,7 +81,7 @@ public partial class UninstallViewModel : ViewModelBase
 
     public bool CanRemoveSelectedLeftovers => Leftovers.Any(leftover => leftover.IsSelected) && !IsBusy;
 
-    public bool CanCancel => IsBusy && _removalCts is { IsCancellationRequested: false };
+    public bool CanCancel => IsBusy && _operationCancellation is not null;
 
     public string SortSummary => $"sorted by {SortKey}{(SortDescending ? " desc" : " asc")}";
 
@@ -197,10 +206,15 @@ public partial class UninstallViewModel : ViewModelBase
         IsBusy = true;
         Leftovers.Clear();
         NotifyLeftoverSelectionState();
+        BeginOperation();
+        IsProgressIndeterminate = true;
+        CurrentTarget = $"Scanning leftovers for {SelectedApplication.Name}";
 
         try
         {
-            var leftovers = await _installedApplicationService.PreviewLeftoversAsync(SelectedApplication);
+            var leftovers = await _installedApplicationService.PreviewLeftoversAsync(
+                SelectedApplication,
+                _operationCancellation!.Token);
             RunOnUiThread(() =>
             {
                 foreach (var leftover in leftovers)
@@ -216,9 +230,16 @@ public partial class UninstallViewModel : ViewModelBase
                 NotifyLeftoverSelectionState();
             });
         }
+        catch (OperationCanceledException)
+        {
+            LeftoverSummary = "Leftover preview cancelled before completion";
+        }
         finally
         {
             IsBusy = false;
+            IsProgressIndeterminate = false;
+            CurrentTarget = "No active target";
+            EndOperation();
             PreviewLeftoversCommand.NotifyCanExecuteChanged();
             LaunchUninstallerCommand.NotifyCanExecuteChanged();
         }
@@ -251,46 +272,51 @@ public partial class UninstallViewModel : ViewModelBase
         }
     }
 
-    public DestructiveActionAuthorization CreateLeftoverRemovalAuthorization()
+    public ConfirmedDeletionAuthorization ConfirmSelectedLeftoverRemoval()
     {
-        return DestructiveActionAuthorization.Confirmed(
-            WindowsInstalledApplicationService.LeftoverDeletionSource,
-            Leftovers.Where(leftover => leftover.IsSelected).Select(leftover => leftover.Path));
+        return _installedApplicationService.ConfirmLeftoverRemoval(
+            Leftovers.Where(leftover => leftover.IsSelected).ToArray());
     }
 
-    public async Task RemoveSelectedLeftoversAsync(DestructiveActionAuthorization authorization)
+    public async Task RemoveSelectedLeftoversAsync(ConfirmedDeletionAuthorization authorization)
     {
-        ArgumentNullException.ThrowIfNull(authorization);
-
-        var selected = Leftovers.Where(leftover => leftover.IsSelected).ToArray();
-        if (selected.Length == 0 || IsBusy)
+        if (IsBusy)
         {
             return;
         }
 
-        _removalCts?.Dispose();
-        _removalCts = new CancellationTokenSource();
+        var selected = Leftovers.Where(leftover => leftover.IsSelected).ToArray();
+        if (selected.Length == 0)
+        {
+            return;
+        }
+
         IsBusy = true;
-        ProgressText = "Removing selected leftovers...";
         OutputLines.Clear();
         OnPropertyChanged(nameof(OutputText));
-        CancelCommand.NotifyCanExecuteChanged();
+        BeginOperation();
+        IsProgressIndeterminate = false;
+        ProgressMaximum = 100;
+        ProgressValue = 0;
+        CurrentTarget = "Waiting to process the first selected leftover";
 
         try
         {
-            var progress = new Progress<DeletionProgress>(UpdateRemovalProgress);
-            var batch = await _installedApplicationService
-                .RemoveLeftoversAsync(selected, authorization, progress, _removalCts.Token)
-                .ConfigureAwait(false);
+            var progress = new Progress<DeletionProgress>(ApplyProgress);
+            var batch = await _installedApplicationService.RemoveLeftoversAsync(
+                selected,
+                authorization,
+                progress,
+                _operationCancellation!.Token);
             RunOnUiThread(() =>
             {
-                foreach (var result in batch.Results)
+                foreach (var result in batch.ItemResults)
                 {
-                    OutputLines.Add($"{result.Disposition.ToString().ToUpperInvariant()} {result.Path} - {result.Message}");
+                    OutputLines.Add($"{result.Status} {result.Path} - {result.Message}");
                 }
 
-                foreach (var removed in batch.Results
-                    .Where(result => result.Succeeded)
+                foreach (var removed in batch.ItemResults
+                    .Where(result => result.Status is SafeDeletionStatus.Recycled or SafeDeletionStatus.AlreadyAbsent)
                     .Select(result => result.Path)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase))
                 {
@@ -301,32 +327,27 @@ public partial class UninstallViewModel : ViewModelBase
                     }
                 }
 
-                LeftoverSummary = BuildRemovalSummary(batch);
+                LeftoverSummary = $"{batch.Outcome}: recycled {batch.RecycledCount}/{batch.TotalSelectedItems}, " +
+                    $"absent {batch.AlreadyAbsentCount}, rejected {batch.RejectedCount}, failed {batch.FailedCount} | " +
+                    $"bytes recycled {SystemTelemetryFormatter.Bytes(batch.RecycledBytes)} | operation {batch.OperationId}";
                 OnPropertyChanged(nameof(OutputText));
                 NotifyLeftoverSelectionState();
             });
         }
         finally
         {
-            RunOnUiThread(() =>
-            {
-                _removalCts?.Dispose();
-                _removalCts = null;
-                IsBusy = false;
-                ProgressText = "installed applications";
-                OnPropertyChanged(nameof(CanCancel));
-                CancelCommand.NotifyCanExecuteChanged();
-            });
+            IsBusy = false;
+            IsProgressIndeterminate = false;
+            CurrentTarget = "No active target";
+            EndOperation();
         }
     }
 
-    [RelayCommand(CanExecute = nameof(CanCancel))]
+    [RelayCommand]
     public void Cancel()
     {
-        _removalCts?.Cancel();
-        ProgressText = "Cancelling after the current item...";
-        OnPropertyChanged(nameof(CanCancel));
-        CancelCommand.NotifyCanExecuteChanged();
+        _operationCancellation?.Cancel();
+        Summary = "Cancellation requested; waiting for the active item to finish...";
     }
 
     [RelayCommand]
@@ -465,6 +486,32 @@ public partial class UninstallViewModel : ViewModelBase
         });
     }
 
+    private void ApplyProgress(DeletionProgress progress)
+    {
+        RunOnUiThread(() =>
+        {
+            ProgressMaximum = 100;
+            ProgressValue = Math.Clamp(progress.CompletionPercent, 0, 100);
+            CurrentTarget = progress.CurrentPath ?? "Waiting for next target";
+        });
+    }
+
+    private void BeginOperation()
+    {
+        _operationCancellation?.Dispose();
+        _operationCancellation = new CancellationTokenSource();
+        OnPropertyChanged(nameof(CanCancel));
+        CancelCommand.NotifyCanExecuteChanged();
+    }
+
+    private void EndOperation()
+    {
+        _operationCancellation?.Dispose();
+        _operationCancellation = null;
+        OnPropertyChanged(nameof(CanCancel));
+        CancelCommand.NotifyCanExecuteChanged();
+    }
+
     private void TrackLeftover(LeftoverCandidate leftover)
     {
         leftover.PropertyChanged += (_, e) =>
@@ -490,29 +537,5 @@ public partial class UninstallViewModel : ViewModelBase
         OnPropertyChanged(nameof(HasLeftovers));
         OnPropertyChanged(nameof(LeftoverSelectionText));
         OnPropertyChanged(nameof(CanRemoveSelectedLeftovers));
-    }
-
-    private void UpdateRemovalProgress(DeletionProgress progress)
-    {
-        RunOnUiThread(() =>
-        {
-            ProgressText = progress.TotalCount == 0
-                ? "No selected leftovers"
-                : $"{progress.ProcessedCount}/{progress.TotalCount} processed · {progress.RecycledCount} recycled";
-        });
-    }
-
-    private static string BuildRemovalSummary(DeletionBatchResult batch)
-    {
-        var prefix = batch.Outcome switch
-        {
-            DeletionBatchOutcome.Succeeded => "Completed",
-            DeletionBatchOutcome.Cancelled => "Cancelled",
-            DeletionBatchOutcome.PartialSuccess => "Partially completed",
-            _ => "Failed"
-        };
-
-        return $"{prefix}: {batch.RecycledCount} recycled, {batch.AlreadyAbsentCount} already absent, " +
-               $"{batch.RejectedCount} rejected, {batch.FailedCount} failed | {SystemTelemetryFormatter.Bytes(batch.RecycledBytes)}";
     }
 }

@@ -6,24 +6,45 @@ namespace BurrowWin.Services;
 
 public sealed class WindowsInstalledApplicationService : IInstalledApplicationService
 {
-    public const string LeftoverDeletionSource = "uninstall_leftovers";
-
     private static readonly char[] DirectorySeparators = [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar];
 
     private readonly ISafeDeletionService _safeDeletionService;
     private readonly IOperationHistoryService? _operationHistoryService;
+    private readonly IWindowsPathSafetyPolicy _pathSafetyPolicy;
+    private readonly IWindowsFileSystemInspector _fileSystem;
+    private readonly object _previewLock = new();
+    private readonly HashSet<string> _approvedLeftoverFingerprints = new(StringComparer.Ordinal);
 
     public WindowsInstalledApplicationService(IOperationHistoryService? operationHistoryService = null)
-        : this(new RecycleBinDeletionService(), operationHistoryService)
+        : this(
+            new RecycleBinDeletionService(),
+            operationHistoryService,
+            new WindowsPathSafetyPolicy(),
+            new WindowsFileSystemInspector())
     {
     }
 
     public WindowsInstalledApplicationService(
         ISafeDeletionService safeDeletionService,
         IOperationHistoryService? operationHistoryService = null)
+        : this(
+            safeDeletionService,
+            operationHistoryService,
+            new WindowsPathSafetyPolicy(),
+            new WindowsFileSystemInspector())
+    {
+    }
+
+    public WindowsInstalledApplicationService(
+        ISafeDeletionService safeDeletionService,
+        IOperationHistoryService? operationHistoryService,
+        IWindowsPathSafetyPolicy pathSafetyPolicy,
+        IWindowsFileSystemInspector fileSystem)
     {
         _safeDeletionService = safeDeletionService;
         _operationHistoryService = operationHistoryService;
+        _pathSafetyPolicy = pathSafetyPolicy;
+        _fileSystem = fileSystem;
     }
 
     private static readonly string[] ProtectedNamePrefixes =
@@ -60,19 +81,53 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
         InstalledApplication application,
         CancellationToken cancellationToken = default)
     {
+        lock (_previewLock)
+        {
+            _approvedLeftoverFingerprints.Clear();
+        }
+
         return Task.Run<IReadOnlyList<LeftoverCandidate>>(() =>
         {
-            var candidates = BuildLeftoverPaths(application)
-                .Where(candidate => Directory.Exists(candidate.Path))
-                .Select(candidate => new LeftoverCandidate(
-                    candidate.Category,
-                    candidate.Path,
-                    MeasureDirectory(candidate.Path, cancellationToken)))
-                .Where(candidate => candidate.SizeBytes > 0)
+            var candidates = new List<LeftoverCandidate>();
+            foreach (var discovered in BuildLeftoverPaths(application))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var scopeRoot = ResolveLeftoverScope(discovered.Category, discovered.Path);
+                if (string.IsNullOrWhiteSpace(scopeRoot))
+                {
+                    continue;
+                }
+
+                var safety = _pathSafetyPolicy.Validate(discovered.Path, scopeRoot);
+                if (!safety.IsSafe || safety.TargetInfo is not { Exists: true, ItemType: DeletionItemType.Directory })
+                {
+                    continue;
+                }
+
+                var candidate = new LeftoverCandidate(discovered.Category, discovered.Path, 0, scopeRoot);
+                if (!IsSafeLeftoverCandidate(candidate) ||
+                    !_fileSystem.TryMeasureSize(safety.CanonicalPath!, cancellationToken, out var sizeBytes) ||
+                    sizeBytes <= 0)
+                {
+                    continue;
+                }
+
+                candidates.Add(new LeftoverCandidate(discovered.Category, safety.CanonicalPath!, sizeBytes, safety.CanonicalScopeRoot));
+            }
+
+            var ordered = candidates
                 .OrderByDescending(candidate => candidate.SizeBytes)
                 .ToArray();
 
-            return candidates;
+            lock (_previewLock)
+            {
+                foreach (var candidate in ordered)
+                {
+                    _approvedLeftoverFingerprints.Add(BuildDescriptor(candidate).Fingerprint());
+                }
+            }
+
+            return ordered;
         }, cancellationToken);
     }
 
@@ -116,51 +171,48 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
         return result;
     }
 
+    public ConfirmedDeletionAuthorization ConfirmLeftoverRemoval(IReadOnlyList<LeftoverCandidate> leftovers)
+    {
+        return ConfirmedDeletionAuthorization.Confirm(
+            DestructiveFlow.UninstallLeftovers,
+            leftovers.Select(BuildDescriptor));
+    }
+
     public async Task<DeletionBatchResult> RemoveLeftoversAsync(
-        IEnumerable<LeftoverCandidate> leftovers,
-        DestructiveActionAuthorization authorization,
+        IReadOnlyList<LeftoverCandidate> leftovers,
+        ConfirmedDeletionAuthorization authorization,
         IProgress<DeletionProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(leftovers);
         ArgumentNullException.ThrowIfNull(authorization);
+        var workItems = leftovers
+            .Select(candidate => new LeftoverWorkItem(candidate, BuildDescriptor(candidate)))
+            .ToArray();
+        var exactAuthorization = authorization.SourceFlow == DestructiveFlow.UninstallLeftovers &&
+                                 authorization.IsExactMatch(workItems.Select(item => item.Descriptor));
 
-        var requests = leftovers.Select(leftover =>
-        {
-            var businessRuleSatisfied = IsSafeLeftoverCandidate(leftover);
-            return new SafeDeletionRequest(
-                leftover.Path,
-                leftover.SizeBytes,
-                ResolveLeftoverScope(leftover.Path),
-                LeftoverDeletionSource,
-                authorization,
-                "Directory",
-                businessRuleSatisfied,
-                businessRuleSatisfied ? null : "Blocked unsafe uninstall leftover target.");
-        }).ToArray();
+        var batch = await Task.Run(() => DeletionBatchProcessor.RunAsync(
+                workItems,
+                authorization.OperationId,
+                item => item.Descriptor.OriginalPath,
+                item => RemoveLeftoverAsync(item, authorization, exactAuthorization, cancellationToken),
+                progress,
+                cancellationToken))
+            .ConfigureAwait(false);
 
-        var batch = await SafeDeletionBatchRunner.RunAsync(
-            _safeDeletionService,
-            requests,
-            authorization,
-            progress,
-            cancellationToken).ConfigureAwait(false);
-
-        var output = $"Recycled {batch.RecycledCount} leftover targets. " +
-                     $"Already absent {batch.AlreadyAbsentCount}. Rejected {batch.RejectedCount}. " +
-                     $"Failed {batch.FailedCount}. Cancelled {batch.WasCancelled}.";
-        var exitCode = batch.Outcome switch
-        {
-            DeletionBatchOutcome.Succeeded => 0,
-            DeletionBatchOutcome.Cancelled => 130,
-            DeletionBatchOutcome.PartialSuccess => 2,
-            _ => 1
-        };
+        var output = BuildBatchSummary(batch, "leftover targets");
         await RecordHistoryAsync(
             "remove_leftovers",
-            string.Join(Environment.NewLine, batch.Results.Select(result => result.Path)),
-            new MoleCommandResult(exitCode, output, batch.Succeeded ? string.Empty : output, batch.WasCancelled, TimeSpan.Zero),
-            CancellationToken.None).ConfigureAwait(false);
+            $"operation={batch.OperationId}{Environment.NewLine}{string.Join(Environment.NewLine, batch.ItemResults.Select(result => result.Path))}",
+            new MoleCommandResult(
+                batch.ExitCode,
+                output,
+                batch.Succeeded ? string.Empty : output,
+                batch.Cancelled,
+                TimeSpan.Zero),
+            CancellationToken.None,
+            batch).ConfigureAwait(false);
 
         return batch;
     }
@@ -361,17 +413,114 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
         return total;
     }
 
-    private static string ResolveLeftoverScope(string path)
+    private async Task<SafeDeletionResult> RemoveLeftoverAsync(
+        LeftoverWorkItem item,
+        ConfirmedDeletionAuthorization authorization,
+        bool exactAuthorization,
+        CancellationToken cancellationToken)
     {
+        var safety = _pathSafetyPolicy.Validate(
+            item.Descriptor.OriginalPath,
+            item.Descriptor.ExpectedScopeRoot);
+        var approvedByPreview = false;
+        lock (_previewLock)
+        {
+            approvedByPreview = _approvedLeftoverFingerprints.Contains(item.Descriptor.Fingerprint());
+        }
+
+        var validation = exactAuthorization && approvedByPreview
+            ? ValidateLeftoverCandidate(item, safety, cancellationToken)
+            : FlowSafetyValidation.Reject(
+                approvedByPreview ? "authorization_set_mismatch" : "not_previewed",
+                approvedByPreview
+                    ? "Explicit confirmation does not match the exact selected leftover set."
+                    : "The target is not an approved candidate from the current leftover preview.");
+
+        return await _safeDeletionService.DeleteAsync(
+            new SafeDeletionRequest(
+                item.Descriptor,
+                safety.CanonicalPath ?? item.Descriptor.OriginalPath,
+                authorization.OperationId,
+                authorization,
+                validation),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private FlowSafetyValidation ValidateLeftoverCandidate(
+        LeftoverWorkItem item,
+        PathSafetyResult safety,
+        CancellationToken cancellationToken)
+    {
+        if (!safety.IsSafe || safety.CanonicalPath is null)
+        {
+            return FlowSafetyValidation.Reject(safety.ReasonCode, safety.Message);
+        }
+
+        if (!IsSafeLeftoverCandidate(item.Candidate))
+        {
+            return FlowSafetyValidation.Reject(
+                "leftover_scope_changed",
+                "The target no longer matches an approved uninstall-leftover location.");
+        }
+
+        var entry = safety.TargetInfo ?? _fileSystem.Inspect(safety.CanonicalPath);
+        if (!entry.Exists)
+        {
+            return FlowSafetyValidation.Allow();
+        }
+
+        if (entry.ItemType != DeletionItemType.Directory)
+        {
+            return FlowSafetyValidation.Reject("candidate_type_changed", "The leftover target is no longer a directory.");
+        }
+
         try
         {
-            var fullPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
-            return Path.GetDirectoryName(fullPath) ?? Path.GetPathRoot(fullPath) ?? fullPath;
+            if (!_fileSystem.TryMeasureSize(safety.CanonicalPath, cancellationToken, out var observedSize))
+            {
+                return FlowSafetyValidation.Reject("candidate_unverifiable", "The leftover size could not be verified safely.");
+            }
+
+            return observedSize == item.Candidate.SizeBytes
+                ? FlowSafetyValidation.Allow(observedSize)
+                : FlowSafetyValidation.Reject(
+                    "candidate_changed",
+                    "The leftover contents changed after preview; rescan before removal.");
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
+        catch (OperationCanceledException)
         {
-            return path;
+            return FlowSafetyValidation.Reject("cancelled", "Cancellation was requested while revalidating the leftover.");
         }
+    }
+
+    private static string ResolveLeftoverScope(string category, string path)
+    {
+        return category switch
+        {
+            "Local app data" or "Publisher local data" =>
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Roaming app data" or "Publisher roaming data" =>
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Program data" => Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            _ => Path.GetDirectoryName(path) ?? string.Empty
+        };
+    }
+
+    private static DeletionCandidateDescriptor BuildDescriptor(LeftoverCandidate candidate) =>
+        new(
+            candidate.Path,
+            candidate.ApprovedScopeRoot,
+            DestructiveFlow.UninstallLeftovers,
+            candidate.Category,
+            DeletionItemType.Directory,
+            candidate.SizeBytes);
+
+    private static string BuildBatchSummary(DeletionBatchResult batch, string noun)
+    {
+        return $"{batch.Outcome}: recycled {batch.RecycledCount} {noun}, " +
+               $"already absent {batch.AlreadyAbsentCount}, rejected {batch.RejectedCount}, " +
+               $"failed {batch.FailedCount}, bytes recycled {batch.RecycledBytes}, " +
+               $"processed {batch.ProcessedCount}/{batch.TotalSelectedItems}, operation {batch.OperationId}.";
     }
 
     private static bool TryBuildUninstallStartInfo(
@@ -465,38 +614,13 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
             return false;
         }
 
-        if (IsDriveRoot(fullPath) || IsUncPath(fullPath))
+        var scopeRoot = Path.GetDirectoryName(fullPath);
+        if (string.IsNullOrWhiteSpace(scopeRoot))
         {
             return false;
         }
 
-        var blockedRoots = new[]
-        {
-            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86),
-            Environment.SystemDirectory,
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)
-        };
-
-        if (blockedRoots.Any(blocked => IsPathAtOrUnderRoot(fullPath, blocked)))
-        {
-            return false;
-        }
-
-        var blockedExactRoots = new[]
-        {
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)
-        };
-
-        return blockedExactRoots
-            .Where(blocked => !string.IsNullOrWhiteSpace(blocked))
-            .Select(NormalizeRoot)
-            .All(blocked => !string.Equals(fullPath, blocked, StringComparison.OrdinalIgnoreCase));
+        return new WindowsPathSafetyPolicy().Validate(fullPath, scopeRoot).IsSafe;
     }
 
     private static bool TryNormalizePath(string path, out string fullPath)
@@ -561,35 +685,6 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
         return !string.IsNullOrWhiteSpace(userProfile) && IsPathUnderRoot(fullPath, NormalizeRoot(userProfile));
     }
 
-    private static bool IsDriveRoot(string fullPath)
-    {
-        if (fullPath.Length == 2 && fullPath[1] == ':')
-        {
-            return true;
-        }
-
-        var root = Path.GetPathRoot(fullPath);
-        return !string.IsNullOrWhiteSpace(root) &&
-               string.Equals(fullPath, NormalizeRoot(root), StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsUncPath(string fullPath)
-    {
-        return fullPath.StartsWith(@"\\", StringComparison.Ordinal);
-    }
-
-    private static bool IsPathAtOrUnderRoot(string path, string root)
-    {
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            return false;
-        }
-
-        var normalizedRoot = NormalizeRoot(root);
-        return string.Equals(path, normalizedRoot, StringComparison.OrdinalIgnoreCase) ||
-               IsPathUnderRoot(path, normalizedRoot);
-    }
-
     private static bool IsPathUnderRoot(string path, string root)
     {
         return path.StartsWith(
@@ -616,7 +711,8 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
         string operation,
         string arguments,
         MoleCommandResult result,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DeletionBatchResult? batch = null)
     {
         if (_operationHistoryService is null)
         {
@@ -631,7 +727,17 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
             result.ExitCode,
             result.Succeeded,
             (long)result.Duration.TotalMilliseconds,
-            string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError);
+            string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError,
+            batch?.Outcome,
+            batch?.OperationId,
+            batch?.RecycledCount ?? 0,
+            batch?.AlreadyAbsentCount ?? 0,
+            batch?.RejectedCount ?? 0,
+            batch?.FailedCount ?? 0,
+            batch?.ProcessedCount ?? 0,
+            batch?.TotalSelectedItems ?? 0,
+            batch?.RecycledBytes ?? 0,
+            batch?.Cancelled ?? false);
 
         try
         {
@@ -641,4 +747,8 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
         {
         }
     }
+
+    private sealed record LeftoverWorkItem(
+        LeftoverCandidate Candidate,
+        DeletionCandidateDescriptor Descriptor);
 }

@@ -4,8 +4,6 @@ namespace BurrowWin.Services;
 
 public sealed class InstallerCleanupService : IInstallerCleanupService
 {
-    public const string DeletionSource = "installer";
-
     private const int DefaultDaysOld = 30;
 
     private static readonly string[] InstallerPatterns =
@@ -20,21 +18,40 @@ public sealed class InstallerCleanupService : IInstallerCleanupService
     ];
 
     private readonly ISafeDeletionService _safeDeletionService;
+    private readonly IWindowsPathSafetyPolicy _pathSafetyPolicy;
+    private readonly IWindowsFileSystemInspector _fileSystem;
     private readonly string _downloadsPath;
     private readonly int _daysOld;
+    private readonly object _previewLock = new();
+    private readonly HashSet<string> _approvedCandidateFingerprints = new(StringComparer.Ordinal);
 
     public InstallerCleanupService()
-        : this(ResolveDefaultDownloadsPath(), DefaultDaysOld, new RecycleBinDeletionService())
+        : this(
+            ResolveDefaultDownloadsPath(),
+            DefaultDaysOld,
+            new RecycleBinDeletionService(),
+            new WindowsPathSafetyPolicy(),
+            new WindowsFileSystemInspector())
     {
     }
 
     public InstallerCleanupService(ISafeDeletionService safeDeletionService)
-        : this(ResolveDefaultDownloadsPath(), DefaultDaysOld, safeDeletionService)
+        : this(
+            ResolveDefaultDownloadsPath(),
+            DefaultDaysOld,
+            safeDeletionService,
+            new WindowsPathSafetyPolicy(),
+            new WindowsFileSystemInspector())
     {
     }
 
     public InstallerCleanupService(string downloadsPath, int daysOld = DefaultDaysOld)
-        : this(downloadsPath, daysOld, new RecycleBinDeletionService())
+        : this(
+            downloadsPath,
+            daysOld,
+            new RecycleBinDeletionService(),
+            new WindowsPathSafetyPolicy(),
+            new WindowsFileSystemInspector())
     {
     }
 
@@ -42,9 +59,39 @@ public sealed class InstallerCleanupService : IInstallerCleanupService
         string downloadsPath,
         int daysOld,
         ISafeDeletionService safeDeletionService)
+        : this(
+            downloadsPath,
+            daysOld,
+            safeDeletionService,
+            new WindowsPathSafetyPolicy(),
+            new WindowsFileSystemInspector())
+    {
+    }
+
+    public InstallerCleanupService(
+        ISafeDeletionService safeDeletionService,
+        IWindowsPathSafetyPolicy pathSafetyPolicy,
+        IWindowsFileSystemInspector fileSystem)
+        : this(
+            ResolveDefaultDownloadsPath(),
+            DefaultDaysOld,
+            safeDeletionService,
+            pathSafetyPolicy,
+            fileSystem)
+    {
+    }
+
+    public InstallerCleanupService(
+        string downloadsPath,
+        int daysOld,
+        ISafeDeletionService safeDeletionService,
+        IWindowsPathSafetyPolicy pathSafetyPolicy,
+        IWindowsFileSystemInspector fileSystem)
     {
         _safeDeletionService = safeDeletionService;
-        _downloadsPath = Path.GetFullPath(downloadsPath);
+        _pathSafetyPolicy = pathSafetyPolicy;
+        _fileSystem = fileSystem;
+        _downloadsPath = downloadsPath?.Trim() ?? string.Empty;
         _daysOld = Math.Max(1, daysOld);
     }
 
@@ -61,9 +108,10 @@ public sealed class InstallerCleanupService : IInstallerCleanupService
 
     public Task<IReadOnlyList<InstallerCleanupCandidate>> PreviewAsync(CancellationToken cancellationToken = default)
     {
+        ClearApprovedPreview();
         return Task.Run(() =>
         {
-            if (!Directory.Exists(_downloadsPath))
+            if (!_pathSafetyPolicy.ValidateScopeRoot(_downloadsPath).IsSafe || !Directory.Exists(_downloadsPath))
             {
                 return (IReadOnlyList<InstallerCleanupCandidate>)Array.Empty<InstallerCleanupCandidate>();
             }
@@ -77,9 +125,9 @@ public sealed class InstallerCleanupService : IInstallerCleanupService
                 IEnumerable<string> files;
                 try
                 {
-                    files = Directory.EnumerateFiles(_downloadsPath, pattern, SearchOption.TopDirectoryOnly);
+                    files = Directory.EnumerateFiles(_downloadsPath, pattern, SearchOption.TopDirectoryOnly).ToArray();
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
                 {
                     continue;
                 }
@@ -95,55 +143,67 @@ public sealed class InstallerCleanupService : IInstallerCleanupService
                 }
             }
 
-            return (IReadOnlyList<InstallerCleanupCandidate>)candidates.Values
+            var ordered = candidates.Values
                 .OrderByDescending(candidate => candidate.SizeBytes)
                 .ThenBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+            lock (_previewLock)
+            {
+                foreach (var candidate in ordered)
+                {
+                    _approvedCandidateFingerprints.Add(BuildDescriptor(candidate).Fingerprint());
+                }
+            }
+
+            return (IReadOnlyList<InstallerCleanupCandidate>)ordered;
         }, cancellationToken);
+    }
+
+    public ConfirmedDeletionAuthorization ConfirmRemoval(IReadOnlyList<InstallerCleanupCandidate> candidates)
+    {
+        return ConfirmedDeletionAuthorization.Confirm(
+            DestructiveFlow.Installer,
+            candidates.Select(BuildDescriptor));
     }
 
     public Task<DeletionBatchResult> RemoveAsync(
         IReadOnlyList<InstallerCleanupCandidate> candidates,
-        DestructiveActionAuthorization authorization,
+        ConfirmedDeletionAuthorization authorization,
         IProgress<DeletionProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(candidates);
         ArgumentNullException.ThrowIfNull(authorization);
+        var workItems = candidates
+            .Select(candidate => new InstallerWorkItem(candidate, BuildDescriptor(candidate)))
+            .ToArray();
+        var exactAuthorization = authorization.SourceFlow == DestructiveFlow.Installer &&
+                                 authorization.IsExactMatch(workItems.Select(item => item.Descriptor));
 
-        var requests = candidates.Select(candidate =>
-        {
-            var businessRuleSatisfied = IsCandidateStillAllowed(candidate, out var failure);
-            return new SafeDeletionRequest(
-                candidate.Path,
-                candidate.SizeBytes,
-                _downloadsPath,
-                DeletionSource,
-                authorization,
-                "File",
-                businessRuleSatisfied,
-                failure);
-        }).ToArray();
-
-        return SafeDeletionBatchRunner.RunAsync(
-            _safeDeletionService,
-            requests,
-            authorization,
-            progress,
-            cancellationToken);
+        return Task.Run(() => DeletionBatchProcessor.RunAsync(
+                workItems,
+                authorization.OperationId,
+                item => item.Descriptor.OriginalPath,
+                item => RemoveCandidateAsync(item, authorization, exactAuthorization, cancellationToken),
+                progress,
+                cancellationToken));
     }
 
     private InstallerCleanupCandidate? BuildCandidate(string file, DateTimeOffset cutoffUtc)
     {
         try
         {
-            var fullPath = Path.GetFullPath(file);
-            if (!IsPathDirectlyInDownloads(fullPath) || !IsInstallerPattern(fullPath))
+            var safety = _pathSafetyPolicy.Validate(file, _downloadsPath);
+            if (!safety.IsSafe || safety.CanonicalPath is null ||
+                safety.TargetInfo is not { Exists: true, ItemType: DeletionItemType.File } ||
+                !IsPathDirectlyInDownloads(safety.CanonicalPath) ||
+                !IsInstallerPattern(safety.CanonicalPath))
             {
                 return null;
             }
 
-            var info = new FileInfo(fullPath);
+            var info = new FileInfo(safety.CanonicalPath);
             var lastWriteTime = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero);
             if (lastWriteTime >= cutoffUtc)
             {
@@ -157,32 +217,87 @@ public sealed class InstallerCleanupService : IInstallerCleanupService
                 info.Length,
                 lastWriteTime);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
         {
             return null;
         }
     }
 
-    private bool IsCandidateStillAllowed(InstallerCleanupCandidate candidate, out string? failure)
+    private async Task<SafeDeletionResult> RemoveCandidateAsync(
+        InstallerWorkItem item,
+        ConfirmedDeletionAuthorization authorization,
+        bool exactAuthorization,
+        CancellationToken cancellationToken)
     {
-        failure = null;
-        try
+        var safety = _pathSafetyPolicy.Validate(item.Descriptor.OriginalPath, item.Descriptor.ExpectedScopeRoot);
+        bool approvedByPreview;
+        lock (_previewLock)
         {
-            var candidatePath = Path.GetFullPath(candidate.Path);
-            if (IsPathDirectlyInDownloads(candidatePath) && IsInstallerPattern(candidatePath))
-            {
-                return true;
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
-        {
-            failure = $"Installer target could not be revalidated ({ex.GetType().Name}).";
-            return false;
+            approvedByPreview = _approvedCandidateFingerprints.Contains(item.Descriptor.Fingerprint());
         }
 
-        failure = "Path is outside the installer preview scope or no longer matches an allowed installer pattern.";
-        return false;
+        var validation = exactAuthorization && approvedByPreview
+            ? ValidateInstallerCandidate(item, safety)
+            : FlowSafetyValidation.Reject(
+                approvedByPreview ? "authorization_set_mismatch" : "not_previewed",
+                approvedByPreview
+                    ? "Explicit confirmation does not match the exact selected installer candidate set."
+                    : "The target is not an approved candidate from the current installer preview.");
+
+        return await _safeDeletionService.DeleteAsync(
+            new SafeDeletionRequest(
+                item.Descriptor,
+                safety.CanonicalPath ?? item.Descriptor.OriginalPath,
+                authorization.OperationId,
+                authorization,
+                validation),
+            cancellationToken).ConfigureAwait(false);
     }
+
+    private FlowSafetyValidation ValidateInstallerCandidate(InstallerWorkItem item, PathSafetyResult safety)
+    {
+        if (!safety.IsSafe || safety.CanonicalPath is null)
+        {
+            return FlowSafetyValidation.Reject(safety.ReasonCode, safety.Message);
+        }
+
+        if (!IsPathDirectlyInDownloads(safety.CanonicalPath) || !IsInstallerPattern(safety.CanonicalPath))
+        {
+            return FlowSafetyValidation.Reject(
+                "installer_scope_changed",
+                "The target is no longer a direct Downloads child with an approved installer/archive extension.");
+        }
+
+        var entry = safety.TargetInfo ?? _fileSystem.Inspect(safety.CanonicalPath);
+        if (!entry.Exists)
+        {
+            return FlowSafetyValidation.Allow();
+        }
+
+        if (entry.ItemType != DeletionItemType.File ||
+            entry.SizeBytes != item.Candidate.SizeBytes ||
+            !SameTimestamp(entry.LastWriteTimeUtc, item.Candidate.LastWriteTime))
+        {
+            return FlowSafetyValidation.Reject(
+                "candidate_changed",
+                "The installer/archive changed after preview; rescan before removal.");
+        }
+
+        return FlowSafetyValidation.Allow(entry.SizeBytes);
+    }
+
+    private DeletionCandidateDescriptor BuildDescriptor(InstallerCleanupCandidate candidate) =>
+        new(
+            candidate.Path,
+            _downloadsPath,
+            DestructiveFlow.Installer,
+            candidate.Kind,
+            DeletionItemType.File,
+            candidate.SizeBytes,
+            candidate.LastWriteTime.ToUniversalTime());
+
+    private static bool SameTimestamp(DateTimeOffset? observed, DateTimeOffset previewed) =>
+        observed.HasValue && observed.Value.UtcDateTime == previewed.UtcDateTime;
 
     private bool IsPathDirectlyInDownloads(string fullPath)
     {
@@ -224,4 +339,16 @@ public sealed class InstallerCleanupService : IInstallerCleanupService
 
         return "Archive";
     }
+
+    private void ClearApprovedPreview()
+    {
+        lock (_previewLock)
+        {
+            _approvedCandidateFingerprints.Clear();
+        }
+    }
+
+    private sealed record InstallerWorkItem(
+        InstallerCleanupCandidate Candidate,
+        DeletionCandidateDescriptor Descriptor);
 }

@@ -27,7 +27,7 @@ public sealed class JsonDeletionReceiptStore : IDeletionReceiptStore
 
     public string ReceiptFilePath { get; }
 
-    public async Task RecordAsync(DeletionReceipt receipt, CancellationToken cancellationToken = default)
+    public async Task AppendAsync(DeletionReceipt receipt, CancellationToken cancellationToken = default)
     {
         var directory = Path.GetDirectoryName(ReceiptFilePath);
         if (!string.IsNullOrWhiteSpace(directory))
@@ -35,12 +35,11 @@ public sealed class JsonDeletionReceiptStore : IDeletionReceiptStore
             Directory.CreateDirectory(directory);
         }
 
-        var line = JsonSerializer.Serialize(receipt, SerializerOptions);
+        var line = JsonSerializer.Serialize(receipt, SerializerOptions) + Environment.NewLine;
         await _fileLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await File.AppendAllTextAsync(ReceiptFilePath, line + Environment.NewLine, cancellationToken)
-                .ConfigureAwait(false);
+            await File.AppendAllTextAsync(ReceiptFilePath, line, cancellationToken).ConfigureAwait(false);
         }
         finally
         {

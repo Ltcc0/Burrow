@@ -1,24 +1,20 @@
 namespace BurrowWin.Services;
 
-public sealed record PathSafetyResult(bool IsSafe, string? CanonicalPath, string Message)
+public sealed record PathSafetyResult(
+    bool IsSafe,
+    string ReasonCode,
+    string Message,
+    string? CanonicalPath,
+    string? CanonicalScopeRoot,
+    FileSystemEntryInfo? TargetInfo)
 {
-    public static PathSafetyResult Allow(string canonicalPath)
-    {
-        return new PathSafetyResult(true, canonicalPath, "Path passed Windows safety validation.");
-    }
-
-    public static PathSafetyResult Reject(string message, string? canonicalPath = null)
-    {
-        return new PathSafetyResult(false, canonicalPath, message);
-    }
+    public static PathSafetyResult Reject(string code, string message, string? canonicalPath = null, string? canonicalScopeRoot = null) =>
+        new(false, code, message, canonicalPath, canonicalScopeRoot, null);
 }
 
 public interface IWindowsPathSafetyPolicy
 {
-    PathSafetyResult Evaluate(string path, string scopeRoot);
-}
+    PathSafetyResult Validate(string path, string approvedScopeRoot);
 
-public interface IWindowsPathInspector
-{
-    FileAttributes? GetAttributes(string path);
+    PathSafetyResult ValidateScopeRoot(string scopeRoot);
 }

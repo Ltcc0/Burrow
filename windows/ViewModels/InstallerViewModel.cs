@@ -13,7 +13,7 @@ public partial class InstallerViewModel : ViewModelBase
     private readonly IInstallerCleanupService _installerCleanupService;
     private readonly IMoleEngineService _moleEngineService;
     private readonly IOperationHistoryService _operationHistoryService;
-    private CancellationTokenSource? _operationCts;
+    private CancellationTokenSource? _operationCancellation;
 
     public InstallerViewModel(
         IInstallerCleanupService installerCleanupService,
@@ -45,11 +45,22 @@ public partial class InstallerViewModel : ViewModelBase
     private string engineSummary = "Mole Windows has no dedicated installer command yet; this view mirrors Mole's old Downloads installer/archive rules.";
 
     [ObservableProperty]
-    private string progressText = "old Downloads installers";
+    private string currentTarget = "No active target";
+
+    [ObservableProperty]
+    private int progressValue;
+
+    [ObservableProperty]
+    private int progressMaximum = 100;
+
+    [ObservableProperty]
+    private bool isProgressIndeterminate;
 
     public string OutputText => string.Join(Environment.NewLine, OutputLines);
 
-    public bool CanCancel => IsBusy && _operationCts is { IsCancellationRequested: false };
+    public bool CanStartOperation => !IsBusy;
+
+    public bool CanCancel => IsBusy && _operationCancellation is not null;
 
     [RelayCommand]
     public async Task ScanAsync()
@@ -60,21 +71,24 @@ public partial class InstallerViewModel : ViewModelBase
         }
 
         var startedAt = Stopwatch.GetTimestamp();
-        var exitCode = 1;
+        var succeeded = false;
         var historySummary = "Installer preview did not finish";
 
-        var cancellationToken = BeginOperation("Scanning old installers...");
+        IsBusy = true;
         CanRemove = false;
         ClearItems();
         OutputLines.Clear();
         OnPropertyChanged(nameof(OutputText));
         Summary = "Scanning old installers...";
+        CurrentTarget = "Scanning the configured Downloads directory";
+        IsProgressIndeterminate = true;
+        BeginOperation();
 
         try
         {
             var availability = _moleEngineService.GetAvailability();
-            var items = await _installerCleanupService.PreviewAsync(cancellationToken).ConfigureAwait(false);
-            exitCode = 0;
+            var items = await _installerCleanupService.PreviewAsync(_operationCancellation!.Token).ConfigureAwait(false);
+            succeeded = true;
             historySummary = BuildPreviewSummary(items);
 
             RunOnUiThread(() =>
@@ -96,8 +110,7 @@ public partial class InstallerViewModel : ViewModelBase
         }
         catch (OperationCanceledException)
         {
-            exitCode = 130;
-            historySummary = "Installer preview cancelled";
+            historySummary = "Installer preview cancelled before completion";
             RunOnUiThread(() => Summary = historySummary);
         }
         finally
@@ -105,82 +118,100 @@ public partial class InstallerViewModel : ViewModelBase
             await RecordHistoryAsync(
                 "installer-preview",
                 "old Downloads installers",
-                exitCode,
+                succeeded,
                 Stopwatch.GetElapsedTime(startedAt),
                 historySummary).ConfigureAwait(false);
 
-            RunOnUiThread(EndOperation);
+            RunOnUiThread(() =>
+            {
+                IsBusy = false;
+                IsProgressIndeterminate = false;
+                CurrentTarget = "No active target";
+                UpdateSelectionState();
+                EndOperation();
+            });
         }
     }
 
-    public DestructiveActionAuthorization CreateRemovalAuthorization()
+    public ConfirmedDeletionAuthorization ConfirmSelectedRemoval()
     {
-        return DestructiveActionAuthorization.Confirmed(
-            InstallerCleanupService.DeletionSource,
-            Items.Where(item => item.IsSelected).Select(item => item.Path));
+        return _installerCleanupService.ConfirmRemoval(
+            Items.Where(item => item.IsSelected).ToList());
     }
 
-    public async Task RemoveAsync(DestructiveActionAuthorization authorization)
+    public async Task RemoveAsync(ConfirmedDeletionAuthorization authorization)
     {
-        ArgumentNullException.ThrowIfNull(authorization);
+        if (IsBusy)
+        {
+            return;
+        }
 
         var selected = Items.Where(item => item.IsSelected).ToList();
-        if (selected.Count == 0 || IsBusy)
+        if (selected.Count == 0)
         {
             return;
         }
 
         var startedAt = Stopwatch.GetTimestamp();
-        var exitCode = 1;
         var historySummary = "Installer removal did not finish";
 
-        var cancellationToken = BeginOperation("Removing selected installers...");
+        IsBusy = true;
         CanRemove = false;
         OutputLines.Clear();
         OnPropertyChanged(nameof(OutputText));
         Summary = "Removing selected installers...";
+        BeginOperation();
+        IsProgressIndeterminate = false;
+        ProgressMaximum = 100;
+        ProgressValue = 0;
+        CurrentTarget = "Waiting to process the first selected file";
 
         try
         {
-            var progress = new Progress<DeletionProgress>(UpdateProgress);
-            var batch = await _installerCleanupService
-                .RemoveAsync(selected, authorization, progress, cancellationToken)
-                .ConfigureAwait(false);
-            exitCode = ExitCodeFor(batch);
+            var progress = new Progress<DeletionProgress>(ApplyProgress);
+            var batch = await _installerCleanupService.RemoveAsync(
+                selected,
+                authorization,
+                progress,
+                _operationCancellation!.Token).ConfigureAwait(false);
             historySummary = BuildRemovalSummary(batch);
 
             RunOnUiThread(() =>
             {
-                foreach (var result in batch.Results)
+                foreach (var result in batch.ItemResults)
                 {
-                    var prefix = result.Disposition.ToString().ToLowerInvariant();
-                    OutputLines.Add($"{prefix}: {result.Path} ({SystemTelemetryFormatter.Bytes(result.SizeBytes)}) {result.Message}");
+                    OutputLines.Add($"{result.Status}: {result.Path} {result.Message}");
                 }
 
                 Summary = historySummary;
                 OnPropertyChanged(nameof(OutputText));
             });
+
+            await RecordBatchHistoryAsync(
+                "installer-remove",
+                $"{selected.Count} selected old Downloads installers",
+                batch,
+                Stopwatch.GetElapsedTime(startedAt),
+                historySummary).ConfigureAwait(false);
         }
         finally
         {
-            await RecordHistoryAsync(
-                "installer-remove",
-                $"{selected.Count} selected old Downloads installers",
-                exitCode,
-                Stopwatch.GetElapsedTime(startedAt),
-                historySummary).ConfigureAwait(false);
-
-            RunOnUiThread(EndOperation);
+            RunOnUiThread(() =>
+            {
+                IsBusy = false;
+                IsProgressIndeterminate = false;
+                CurrentTarget = "No active target";
+                UpdateSelectionState();
+                EndOperation();
+            });
         }
     }
 
-    [RelayCommand(CanExecute = nameof(CanCancel))]
+    [RelayCommand]
     public void Cancel()
     {
-        _operationCts?.Cancel();
-        ProgressText = "Cancelling after the current item...";
-        OnPropertyChanged(nameof(CanCancel));
-        CancelCommand.NotifyCanExecuteChanged();
+        _operationCancellation?.Cancel();
+        Summary = "Cancellation requested; waiting for the active item to finish...";
     }
 
     [RelayCommand]
@@ -243,66 +274,50 @@ public partial class InstallerViewModel : ViewModelBase
         return $"{items.Count} files - {SystemTelemetryFormatter.Bytes(totalBytes)}";
     }
 
-    private CancellationToken BeginOperation(string progressText)
+    private static string BuildRemovalSummary(DeletionBatchResult batch)
     {
-        _operationCts?.Dispose();
-        _operationCts = new CancellationTokenSource();
-        ProgressText = progressText;
-        IsBusy = true;
+        return $"{batch.Outcome}: recycled {batch.RecycledCount}/{batch.TotalSelectedItems} files, " +
+               $"absent {batch.AlreadyAbsentCount}, rejected {batch.RejectedCount}, failed {batch.FailedCount}, " +
+               $"recycled {SystemTelemetryFormatter.Bytes(batch.RecycledBytes)} (operation {batch.OperationId})";
+    }
+
+    private void ApplyProgress(DeletionProgress progress)
+    {
+        RunOnUiThread(() =>
+        {
+            ProgressMaximum = 100;
+            ProgressValue = Math.Clamp(progress.CompletionPercent, 0, 100);
+            CurrentTarget = progress.CurrentPath ?? "Waiting for next target";
+        });
+    }
+
+    private void BeginOperation()
+    {
+        _operationCancellation?.Dispose();
+        _operationCancellation = new CancellationTokenSource();
         OnPropertyChanged(nameof(CanCancel));
         CancelCommand.NotifyCanExecuteChanged();
-        return _operationCts.Token;
     }
 
     private void EndOperation()
     {
-        _operationCts?.Dispose();
-        _operationCts = null;
-        IsBusy = false;
-        ProgressText = "old Downloads installers";
+        _operationCancellation?.Dispose();
+        _operationCancellation = null;
         OnPropertyChanged(nameof(CanCancel));
         CancelCommand.NotifyCanExecuteChanged();
-        UpdateSelectionState();
     }
 
-    private void UpdateProgress(DeletionProgress progress)
+    partial void OnIsBusyChanged(bool value)
     {
-        RunOnUiThread(() =>
-        {
-            ProgressText = progress.TotalCount == 0
-                ? "No selected installers"
-                : $"{progress.ProcessedCount}/{progress.TotalCount} processed · {progress.RecycledCount} recycled";
-        });
-    }
-
-    private static int ExitCodeFor(DeletionBatchResult batch)
-    {
-        return batch.Outcome switch
-        {
-            DeletionBatchOutcome.Succeeded => 0,
-            DeletionBatchOutcome.Cancelled => 130,
-            DeletionBatchOutcome.PartialSuccess => 2,
-            _ => 1
-        };
-    }
-
-    private static string BuildRemovalSummary(DeletionBatchResult batch)
-    {
-        var prefix = batch.Outcome switch
-        {
-            DeletionBatchOutcome.Succeeded => "Completed",
-            DeletionBatchOutcome.Cancelled => "Cancelled",
-            DeletionBatchOutcome.PartialSuccess => "Partially completed",
-            _ => "Failed"
-        };
-        return $"{prefix}: {batch.RecycledCount} recycled, {batch.AlreadyAbsentCount} already absent, " +
-               $"{batch.RejectedCount} rejected, {batch.FailedCount} failed · {SystemTelemetryFormatter.Bytes(batch.RecycledBytes)}";
+        OnPropertyChanged(nameof(CanStartOperation));
+        OnPropertyChanged(nameof(CanCancel));
+        CancelCommand.NotifyCanExecuteChanged();
     }
 
     private async Task RecordHistoryAsync(
         string operation,
         string arguments,
-        int exitCode,
+        bool succeeded,
         TimeSpan duration,
         string historySummary)
     {
@@ -311,10 +326,46 @@ public partial class InstallerViewModel : ViewModelBase
             "burrowwin",
             operation,
             arguments,
-            exitCode,
-            exitCode == 0,
+            succeeded ? 0 : 1,
+            succeeded,
             (long)duration.TotalMilliseconds,
             historySummary);
+
+        try
+        {
+            await _operationHistoryService.RecordAsync(entry).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private async Task RecordBatchHistoryAsync(
+        string operation,
+        string arguments,
+        DeletionBatchResult batch,
+        TimeSpan duration,
+        string historySummary)
+    {
+        var entry = new OperationHistoryEntry(
+            DateTimeOffset.UtcNow,
+            "burrowwin",
+            operation,
+            arguments,
+            batch.ExitCode,
+            batch.Succeeded,
+            (long)duration.TotalMilliseconds,
+            historySummary,
+            batch.Outcome,
+            batch.OperationId,
+            batch.RecycledCount,
+            batch.AlreadyAbsentCount,
+            batch.RejectedCount,
+            batch.FailedCount,
+            batch.ProcessedCount,
+            batch.TotalSelectedItems,
+            batch.RecycledBytes,
+            batch.Cancelled);
 
         try
         {

@@ -14,9 +14,11 @@ public interface IInstalledApplicationService
         InstalledApplication application,
         CancellationToken cancellationToken = default);
 
+    ConfirmedDeletionAuthorization ConfirmLeftoverRemoval(IReadOnlyList<LeftoverCandidate> leftovers);
+
     Task<DeletionBatchResult> RemoveLeftoversAsync(
-        IEnumerable<LeftoverCandidate> leftovers,
-        DestructiveActionAuthorization authorization,
+        IReadOnlyList<LeftoverCandidate> leftovers,
+        ConfirmedDeletionAuthorization authorization,
         IProgress<DeletionProgress>? progress = null,
         CancellationToken cancellationToken = default);
 }

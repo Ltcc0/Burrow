@@ -1,223 +1,271 @@
-using System.Security;
+using BurrowWin.Models;
 
 namespace BurrowWin.Services;
 
 public sealed class WindowsPathSafetyPolicy : IWindowsPathSafetyPolicy
 {
-    private static readonly char[] DirectorySeparators = ['\\', '/'];
-    private readonly IWindowsPathInspector _pathInspector;
+    private static readonly char[] Separators = ['\\', '/'];
+    private readonly IWindowsFileSystemInspector _fileSystem;
+    private readonly IReadOnlyList<string> _protectedRoots;
 
     public WindowsPathSafetyPolicy()
-        : this(new SystemWindowsPathInspector())
+        : this(new WindowsFileSystemInspector())
     {
     }
 
-    public WindowsPathSafetyPolicy(IWindowsPathInspector pathInspector)
+    public WindowsPathSafetyPolicy(
+        IWindowsFileSystemInspector fileSystem,
+        IEnumerable<string>? protectedRoots = null)
     {
-        _pathInspector = pathInspector ?? throw new ArgumentNullException(nameof(pathInspector));
+        _fileSystem = fileSystem;
+        _protectedRoots = (protectedRoots ?? DefaultProtectedRoots())
+            .Where(root => !string.IsNullOrWhiteSpace(root))
+            .Select(root => TryCanonicalize(root, out var canonical) ? canonical : string.Empty)
+            .Where(root => root.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
-    public PathSafetyResult Evaluate(string path, string scopeRoot)
+    public PathSafetyResult ValidateScopeRoot(string scopeRoot)
     {
-        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(scopeRoot))
+        var rawCheck = ValidateRawPath(scopeRoot, "scope");
+        if (rawCheck is not null)
         {
-            return PathSafetyResult.Reject("Deletion path and scope root are required.");
+            return rawCheck;
         }
 
-        var rawPath = path.Trim();
-        var rawScope = scopeRoot.Trim();
-        if (ContainsDevicePrefix(rawPath) || ContainsDevicePrefix(rawScope))
+        if (!TryCanonicalize(scopeRoot, out var canonicalRoot))
         {
-            return PathSafetyResult.Reject("Windows device and extended-length paths are not accepted for deletion.");
+            return PathSafetyResult.Reject("invalid_scope", "The approved scope root could not be canonicalized.");
         }
 
-        if (HasTraversalSegment(rawPath) || HasTraversalSegment(rawScope))
+        if (IsDriveRoot(canonicalRoot) || IsUncPath(canonicalRoot))
         {
-            return PathSafetyResult.Reject("Traversal segments are not accepted for deletion.");
+            return PathSafetyResult.Reject("unsafe_scope_root", "Drive and UNC roots cannot be deletion scopes.", canonicalScopeRoot: canonicalRoot);
         }
 
-        var expandedPath = Environment.ExpandEnvironmentVariables(rawPath);
-        var expandedScope = Environment.ExpandEnvironmentVariables(rawScope);
-        if (expandedPath.Contains('%', StringComparison.Ordinal) || expandedScope.Contains('%', StringComparison.Ordinal))
+        if (_protectedRoots.Any(root => IsPathAtOrUnderRoot(canonicalRoot, root)))
         {
-            return PathSafetyResult.Reject("Deletion paths contain unresolved environment variables.");
+            return PathSafetyResult.Reject(
+                "protected_scope_root",
+                "Protected Windows and application roots cannot be deletion scopes.",
+                canonicalScopeRoot: canonicalRoot);
         }
 
-        if (!Path.IsPathFullyQualified(expandedPath) || !Path.IsPathFullyQualified(expandedScope))
+        var scopeInfo = _fileSystem.Inspect(canonicalRoot);
+        if (!scopeInfo.Exists || scopeInfo.ItemType != DeletionItemType.Directory)
         {
-            return PathSafetyResult.Reject("Deletion paths must be fully qualified.");
+            return PathSafetyResult.Reject(
+                "invalid_scope",
+                "The approved scope root must be an existing directory.",
+                canonicalScopeRoot: canonicalRoot);
         }
 
-        if (IsUncPath(expandedPath) || IsUncPath(expandedScope))
+        var reparse = FindReparsePoint(canonicalRoot, canonicalRoot, includeAncestorsAboveScope: false);
+        return reparse is null
+            ? new PathSafetyResult(true, "safe_scope", "The approved scope root is safe.", canonicalRoot, canonicalRoot, scopeInfo)
+            : PathSafetyResult.Reject("reparse_scope", $"The approved scope is a reparse point: {reparse}", canonicalScopeRoot: canonicalRoot);
+    }
+
+    public PathSafetyResult Validate(string path, string approvedScopeRoot)
+    {
+        var rawPathCheck = ValidateRawPath(path, "target");
+        if (rawPathCheck is not null)
         {
-            return PathSafetyResult.Reject("UNC deletion targets are not supported by the reversible Windows fallback.");
+            return rawPathCheck;
         }
 
-        if (HasAlternateDataStream(expandedPath) || HasAlternateDataStream(expandedScope))
+        var rawScopeCheck = ValidateRawPath(approvedScopeRoot, "scope");
+        if (rawScopeCheck is not null)
         {
-            return PathSafetyResult.Reject("Alternate data stream paths are not accepted for deletion.");
+            return rawScopeCheck;
         }
 
-        string canonicalPath;
-        string canonicalScope;
+        if (!TryCanonicalize(path, out var canonicalPath) || !TryCanonicalize(approvedScopeRoot, out var canonicalRoot))
+        {
+            return PathSafetyResult.Reject("canonicalization_failed", "The target or approved scope could not be canonicalized.");
+        }
+
+        if (IsDriveRoot(canonicalPath))
+        {
+            return PathSafetyResult.Reject("drive_root", "Drive roots cannot be deleted.", canonicalPath, canonicalRoot);
+        }
+
+        if (IsUncPath(canonicalPath))
+        {
+            return PathSafetyResult.Reject("unc_path", "UNC targets are not supported by the reversible deletion fallback.", canonicalPath, canonicalRoot);
+        }
+
+        if (IsDriveRoot(canonicalRoot) || IsUncPath(canonicalRoot))
+        {
+            return PathSafetyResult.Reject("unsafe_scope_root", "Drive and UNC roots cannot be deletion scopes.", canonicalPath, canonicalRoot);
+        }
+
+        if (_protectedRoots.Any(root => IsPathAtOrUnderRoot(canonicalRoot, root)))
+        {
+            return PathSafetyResult.Reject(
+                "protected_root",
+                "The approved scope is inside a protected Windows or application root.",
+                canonicalPath,
+                canonicalRoot);
+        }
+
+        var scopeInfo = _fileSystem.Inspect(canonicalRoot);
+        if (!scopeInfo.Exists || scopeInfo.ItemType != DeletionItemType.Directory)
+        {
+            return PathSafetyResult.Reject(
+                "invalid_scope",
+                "The approved scope root must be an existing directory.",
+                canonicalPath,
+                canonicalRoot);
+        }
+
+        if (string.Equals(canonicalPath, canonicalRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return PathSafetyResult.Reject("scope_root", "The configured scope root itself cannot be deleted.", canonicalPath, canonicalRoot);
+        }
+
+        if (!IsPathUnderRoot(canonicalPath, canonicalRoot))
+        {
+            return PathSafetyResult.Reject("outside_scope", "The target escapes its approved scope.", canonicalPath, canonicalRoot);
+        }
+
+        if (_protectedRoots.Any(root => IsPathAtOrUnderRoot(canonicalPath, root)))
+        {
+            return PathSafetyResult.Reject("protected_root", "The target is inside a protected Windows or application root.", canonicalPath, canonicalRoot);
+        }
+
+        var reparse = FindReparsePoint(canonicalRoot, canonicalPath, includeAncestorsAboveScope: false);
+        if (reparse is not null)
+        {
+            return PathSafetyResult.Reject("reparse_point", $"A target path component is a reparse point: {reparse}", canonicalPath, canonicalRoot);
+        }
+
+        return new PathSafetyResult(
+            true,
+            "safe",
+            "The target passed Windows path safety validation.",
+            canonicalPath,
+            canonicalRoot,
+            _fileSystem.Inspect(canonicalPath));
+    }
+
+    private static PathSafetyResult? ValidateRawPath(string? path, string role)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return PathSafetyResult.Reject($"empty_{role}", $"The {role} path is empty.");
+        }
+
+        var trimmed = path.Trim();
+        if (trimmed.Contains('%', StringComparison.Ordinal))
+        {
+            return PathSafetyResult.Reject(
+                "environment_path",
+                $"The {role} must not contain environment-variable expressions.");
+        }
+
+        var normalized = trimmed.Replace('/', '\\');
+        if (normalized.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith(@"\\.\", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith(@"\??\", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains(@"\GLOBALROOT\", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("GLOBALROOT", StringComparison.OrdinalIgnoreCase))
+        {
+            return PathSafetyResult.Reject("device_path", $"The {role} uses a device or NT path prefix.");
+        }
+
+        if (!Path.IsPathFullyQualified(trimmed))
+        {
+            return PathSafetyResult.Reject("relative_path", $"The {role} must be an absolute path.");
+        }
+
+        if (trimmed.Split(Separators, StringSplitOptions.RemoveEmptyEntries)
+            .Any(segment => segment is "." or ".."))
+        {
+            return PathSafetyResult.Reject("traversal", $"The {role} contains a raw traversal segment.");
+        }
+
+        var firstColon = normalized.IndexOf(':');
+        if (firstColon >= 0 && (firstColon != 1 || normalized.IndexOf(':', firstColon + 1) >= 0))
+        {
+            return PathSafetyResult.Reject("alternate_data_stream", $"The {role} contains alternate data stream syntax.");
+        }
+
+        return null;
+    }
+
+    private string? FindReparsePoint(string canonicalRoot, string canonicalPath, bool includeAncestorsAboveScope)
+    {
+        var current = includeAncestorsAboveScope ? Path.GetPathRoot(canonicalRoot) : canonicalRoot;
+        if (string.IsNullOrWhiteSpace(current))
+        {
+            return canonicalRoot;
+        }
+
+        if (!includeAncestorsAboveScope && _fileSystem.Inspect(canonicalRoot).IsReparsePoint)
+        {
+            return canonicalRoot;
+        }
+
+        var relative = Path.GetRelativePath(current, canonicalPath);
+        foreach (var segment in relative.Split(Separators, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            if (_fileSystem.Inspect(current).IsReparsePoint)
+            {
+                return current;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryCanonicalize(string path, out string canonicalPath)
+    {
+        canonicalPath = string.Empty;
         try
         {
-            canonicalPath = Normalize(Path.GetFullPath(expandedPath));
-            canonicalScope = Normalize(Path.GetFullPath(expandedScope));
+            var expanded = Environment.ExpandEnvironmentVariables(path.Trim());
+            if (expanded.Contains('%', StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            canonicalPath = Path.GetFullPath(expanded).TrimEnd(Separators);
+            return canonicalPath.Length > 0;
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or SecurityException)
-        {
-            return PathSafetyResult.Reject($"Deletion path could not be canonicalized ({ex.GetType().Name}).");
-        }
-
-        if (IsRoot(canonicalPath) || IsRoot(canonicalScope))
-        {
-            return PathSafetyResult.Reject("Volume roots cannot be deletion targets or deletion scopes.", canonicalPath);
-        }
-
-        if (string.Equals(canonicalPath, canonicalScope, StringComparison.OrdinalIgnoreCase))
-        {
-            return PathSafetyResult.Reject("The configured scope root itself cannot be deleted.", canonicalPath);
-        }
-
-        if (!IsStrictlyUnder(canonicalPath, canonicalScope))
-        {
-            return PathSafetyResult.Reject("Deletion target is outside its approved scope.", canonicalPath);
-        }
-
-        if (IsProtectedTarget(canonicalPath))
-        {
-            return PathSafetyResult.Reject("Deletion target is within a protected Windows location.", canonicalPath);
-        }
-
-        var reparseResult = InspectReparsePoints(canonicalPath);
-        if (!reparseResult.IsSafe)
-        {
-            return reparseResult with { CanonicalPath = canonicalPath };
-        }
-
-        return PathSafetyResult.Allow(canonicalPath);
-    }
-
-    private static bool ContainsDevicePrefix(string path)
-    {
-        return path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase) ||
-               path.StartsWith(@"\\.\", StringComparison.OrdinalIgnoreCase) ||
-               path.StartsWith(@"\??\", StringComparison.OrdinalIgnoreCase) ||
-               path.Contains("GLOBALROOT", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool HasTraversalSegment(string path)
-    {
-        return path.Split(DirectorySeparators, StringSplitOptions.RemoveEmptyEntries)
-            .Any(segment => segment is "." or "..");
-    }
-
-    private static bool IsUncPath(string path)
-    {
-        return path.StartsWith(@"\\", StringComparison.Ordinal);
-    }
-
-    private static bool HasAlternateDataStream(string path)
-    {
-        var colon = path.IndexOf(':');
-        if (colon < 0)
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or System.Security.SecurityException)
         {
             return false;
         }
-
-        return colon != 1 || path.IndexOf(':', colon + 1) >= 0;
     }
 
-    private static bool IsRoot(string path)
+    private static bool IsDriveRoot(string path)
     {
         var root = Path.GetPathRoot(path);
         return !string.IsNullOrWhiteSpace(root) &&
-               string.Equals(Normalize(root), path, StringComparison.OrdinalIgnoreCase);
+               string.Equals(path.TrimEnd(Separators), root.TrimEnd(Separators), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsStrictlyUnder(string path, string root)
+    private static bool IsUncPath(string path) => path.StartsWith(@"\\", StringComparison.Ordinal);
+
+    private static bool IsPathAtOrUnderRoot(string path, string root) =>
+        string.Equals(path, root, StringComparison.OrdinalIgnoreCase) || IsPathUnderRoot(path, root);
+
+    private static bool IsPathUnderRoot(string path, string root) =>
+        path.StartsWith(root.TrimEnd(Separators) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith(root.TrimEnd(Separators) + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    private static IEnumerable<string> DefaultProtectedRoots()
     {
-        var relative = Path.GetRelativePath(root, path);
-        return !Path.IsPathRooted(relative) &&
-               !string.Equals(relative, ".", StringComparison.Ordinal) &&
-               relative != ".." &&
-               !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-               !relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal);
-    }
-
-    private static bool IsProtectedTarget(string path)
-    {
-        var protectedRoots = new[]
-        {
-            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
-            Environment.SystemDirectory,
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)
-        };
-
-        return protectedRoots
-            .Where(root => !string.IsNullOrWhiteSpace(root))
-            .Select(root => Normalize(Path.GetFullPath(root)))
-            .Any(root => string.Equals(path, root, StringComparison.OrdinalIgnoreCase) || IsStrictlyUnder(path, root));
-    }
-
-    private PathSafetyResult InspectReparsePoints(string canonicalPath)
-    {
-        var root = Path.GetPathRoot(canonicalPath);
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            return PathSafetyResult.Reject("Deletion target has no filesystem root.");
-        }
-
-        var current = Normalize(root);
-        var relative = canonicalPath[root.Length..];
-        foreach (var segment in relative.Split(DirectorySeparators, StringSplitOptions.RemoveEmptyEntries))
-        {
-            current = Path.Combine(current, segment);
-            try
-            {
-                var attributes = _pathInspector.GetAttributes(current);
-                if (attributes is not null && (attributes.Value & FileAttributes.ReparsePoint) != 0)
-                {
-                    return PathSafetyResult.Reject($"Deletion target crosses a reparse point: {current}");
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
-            {
-                return PathSafetyResult.Reject($"Deletion target could not be inspected safely ({ex.GetType().Name}).");
-            }
-        }
-
-        return PathSafetyResult.Allow(canonicalPath);
-    }
-
-    private static string Normalize(string path)
-    {
-        var root = Path.GetPathRoot(path);
-        if (!string.IsNullOrWhiteSpace(root) && string.Equals(path, root, StringComparison.OrdinalIgnoreCase))
-        {
-            return root;
-        }
-
-        return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-    }
-}
-
-public sealed class SystemWindowsPathInspector : IWindowsPathInspector
-{
-    public FileAttributes? GetAttributes(string path)
-    {
-        try
-        {
-            return File.GetAttributes(path);
-        }
-        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
-        {
-            return null;
-        }
+        yield return Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        yield return Environment.SystemDirectory;
+        yield return Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        yield return Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        yield return Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles);
+        yield return Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86);
+        yield return Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        yield return Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms);
     }
 }
