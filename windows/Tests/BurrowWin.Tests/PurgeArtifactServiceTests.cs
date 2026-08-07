@@ -1,4 +1,5 @@
 using BurrowWin.Services;
+using BurrowWin.Models;
 using Xunit;
 
 namespace BurrowWin.Tests;
@@ -46,10 +47,14 @@ public sealed class PurgeArtifactServiceTests : IDisposable
         var service = new PurgeArtifactService(_root, Path.Combine(_root, "missing.txt"), deletionService);
         var projects = await service.PreviewAsync([_root]);
 
-        var results = await service.RemoveAsync(projects);
+        var authorization = DestructiveActionAuthorization.Confirmed(
+            PurgeArtifactService.DeletionSource,
+            projects.SelectMany(project => project.Artifacts).Select(artifact => artifact.Path));
+        var batch = await service.RemoveAsync(projects, authorization);
 
-        Assert.Single(results);
-        Assert.True(results[0].Succeeded);
+        var result = Assert.Single(batch.Results);
+        Assert.True(result.Succeeded);
+        Assert.Equal(DeletionBatchOutcome.Succeeded, batch.Outcome);
         Assert.True(Directory.Exists(Path.Combine(_root, "Project", "node_modules")));
         Assert.True(File.Exists(sourceFile));
         Assert.Single(deletionService.DeletedPaths);

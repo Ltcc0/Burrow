@@ -6,7 +6,9 @@ public interface IInstallerCleanupService
 {
     Task<IReadOnlyList<InstallerCleanupCandidate>> PreviewAsync(CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<LeftoverRemovalResult>> RemoveAsync(
+    Task<DeletionBatchResult> RemoveAsync(
         IReadOnlyList<InstallerCleanupCandidate> candidates,
+        DestructiveActionAuthorization authorization,
+        IProgress<DeletionProgress>? progress = null,
         CancellationToken cancellationToken = default);
 }

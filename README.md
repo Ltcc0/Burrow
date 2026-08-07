@@ -210,6 +210,9 @@ The checked-in Windows app currently includes:
   stable non-interactive cleanup contract for the GUI.
 - Native Windows fallback flows for Analyze, Purge, installer cleanup, and app
   inventory where the Windows Mole branch is still interactive or lacks JSON.
+- Confirmation-bound Recycle Bin removal for Windows Purge, installer cleanup,
+  and uninstall leftovers, with strict path/reparse-point guards, cancellation,
+  honest partial progress, and local recovery receipts.
 - A tray icon, live tooltip, tray HUD, status menu, and quick navigation.
 - A loopback-only HTTP API (`/health`, `/info`, `/snapshot`, `/metrics`) and a
   stdio MCP bridge with the read-only Burrow tools.

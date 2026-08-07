@@ -6,6 +6,8 @@ namespace BurrowWin.Services;
 
 public sealed class WindowsInstalledApplicationService : IInstalledApplicationService
 {
+    public const string LeftoverDeletionSource = "uninstall_leftovers";
+
     private static readonly char[] DirectorySeparators = [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar];
 
     private readonly ISafeDeletionService _safeDeletionService;
@@ -114,32 +116,53 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
         return result;
     }
 
-    public async Task<IReadOnlyList<LeftoverRemovalResult>> RemoveLeftoversAsync(
+    public async Task<DeletionBatchResult> RemoveLeftoversAsync(
         IEnumerable<LeftoverCandidate> leftovers,
+        DestructiveActionAuthorization authorization,
+        IProgress<DeletionProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        var results = await Task.Run<IReadOnlyList<LeftoverRemovalResult>>(() =>
+        ArgumentNullException.ThrowIfNull(leftovers);
+        ArgumentNullException.ThrowIfNull(authorization);
+
+        var requests = leftovers.Select(leftover =>
         {
-            var results = new List<LeftoverRemovalResult>();
-            foreach (var leftover in leftovers)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                results.Add(RemoveLeftover(leftover));
-            }
+            var businessRuleSatisfied = IsSafeLeftoverCandidate(leftover);
+            return new SafeDeletionRequest(
+                leftover.Path,
+                leftover.SizeBytes,
+                ResolveLeftoverScope(leftover.Path),
+                LeftoverDeletionSource,
+                authorization,
+                "Directory",
+                businessRuleSatisfied,
+                businessRuleSatisfied ? null : "Blocked unsafe uninstall leftover target.");
+        }).ToArray();
 
-            return results;
-        }, cancellationToken).ConfigureAwait(false);
+        var batch = await SafeDeletionBatchRunner.RunAsync(
+            _safeDeletionService,
+            requests,
+            authorization,
+            progress,
+            cancellationToken).ConfigureAwait(false);
 
-        var failedCount = results.Count(result => !result.Succeeded);
-        var removedCount = results.Count(result => result.Succeeded);
-        var output = $"Removed {removedCount} leftover targets. Failed {failedCount}.";
+        var output = $"Recycled {batch.RecycledCount} leftover targets. " +
+                     $"Already absent {batch.AlreadyAbsentCount}. Rejected {batch.RejectedCount}. " +
+                     $"Failed {batch.FailedCount}. Cancelled {batch.WasCancelled}.";
+        var exitCode = batch.Outcome switch
+        {
+            DeletionBatchOutcome.Succeeded => 0,
+            DeletionBatchOutcome.Cancelled => 130,
+            DeletionBatchOutcome.PartialSuccess => 2,
+            _ => 1
+        };
         await RecordHistoryAsync(
             "remove_leftovers",
-            string.Join(Environment.NewLine, results.Select(result => result.Path)),
-            new MoleCommandResult(failedCount == 0 ? 0 : 1, output, failedCount == 0 ? string.Empty : output, false, TimeSpan.Zero),
+            string.Join(Environment.NewLine, batch.Results.Select(result => result.Path)),
+            new MoleCommandResult(exitCode, output, batch.Succeeded ? string.Empty : output, batch.WasCancelled, TimeSpan.Zero),
             CancellationToken.None).ConfigureAwait(false);
 
-        return results;
+        return batch;
     }
 
     public static InstalledApplication? CreateApplicationFromRegistryValues(
@@ -338,21 +361,16 @@ public sealed class WindowsInstalledApplicationService : IInstalledApplicationSe
         return total;
     }
 
-    private LeftoverRemovalResult RemoveLeftover(LeftoverCandidate leftover)
+    private static string ResolveLeftoverScope(string path)
     {
         try
         {
-            var fullPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(leftover.Path));
-            if (!IsSafeLeftoverCandidate(leftover))
-            {
-                return new LeftoverRemovalResult(leftover.Path, false, "Blocked unsafe deletion target.", leftover.SizeBytes);
-            }
-
-            return _safeDeletionService.DeleteFileOrDirectory(fullPath, leftover.SizeBytes);
+            var fullPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+            return Path.GetDirectoryName(fullPath) ?? Path.GetPathRoot(fullPath) ?? fullPath;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
         {
-            return new LeftoverRemovalResult(leftover.Path, false, ex.Message, leftover.SizeBytes);
+            return path;
         }
     }
 

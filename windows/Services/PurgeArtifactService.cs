@@ -4,6 +4,8 @@ namespace BurrowWin.Services;
 
 public sealed class PurgeArtifactService : IPurgeArtifactService
 {
+    public const string DeletionSource = "purge";
+
     private const int MaxSearchDepth = 4;
 
     private static readonly string[] DefaultSearchPaths =
@@ -152,25 +154,39 @@ public sealed class PurgeArtifactService : IPurgeArtifactService
         }, cancellationToken);
     }
 
-    public Task<IReadOnlyList<LeftoverRemovalResult>> RemoveAsync(
+    public Task<DeletionBatchResult> RemoveAsync(
         IReadOnlyList<PurgeProjectCandidate> projects,
+        DestructiveActionAuthorization authorization,
+        IProgress<DeletionProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        return Task.Run(() =>
-        {
-            var results = new List<LeftoverRemovalResult>();
-            foreach (var project in projects)
-            {
-                var projectRoot = Path.GetFullPath(project.Path);
-                foreach (var artifact in project.Artifacts)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    results.Add(RemoveArtifact(projectRoot, artifact));
-                }
-            }
+        ArgumentNullException.ThrowIfNull(projects);
+        ArgumentNullException.ThrowIfNull(authorization);
 
-            return (IReadOnlyList<LeftoverRemovalResult>)results;
-        }, cancellationToken);
+        var requests = new List<SafeDeletionRequest>();
+        foreach (var project in projects)
+        {
+            foreach (var artifact in project.Artifacts)
+            {
+                var businessRuleSatisfied = IsArtifactStillAllowed(project.Path, artifact, out var failure);
+                requests.Add(new SafeDeletionRequest(
+                    artifact.Path,
+                    artifact.SizeBytes,
+                    project.Path,
+                    DeletionSource,
+                    authorization,
+                    artifact.Type,
+                    businessRuleSatisfied,
+                    failure));
+            }
+        }
+
+        return SafeDeletionBatchRunner.RunAsync(
+            _safeDeletionService,
+            requests,
+            authorization,
+            progress,
+            cancellationToken);
     }
 
     private IReadOnlyList<string> ResolveSearchRoots(IReadOnlyList<string>? searchRoots)
@@ -376,22 +392,29 @@ public sealed class PurgeArtifactService : IPurgeArtifactService
         }
     }
 
-    private LeftoverRemovalResult RemoveArtifact(string projectRoot, PurgeArtifactCandidate artifact)
+    private static bool IsArtifactStillAllowed(
+        string projectPath,
+        PurgeArtifactCandidate artifact,
+        out string? failure)
     {
-        var artifactPath = Path.GetFullPath(artifact.Path);
-        if (!IsPathUnder(projectRoot, artifactPath) || !IsAllowedArtifact(projectRoot, artifactPath, artifact.Type))
-        {
-            return new LeftoverRemovalResult(artifact.Path, false, "Path is outside the purge preview scope.", artifact.SizeBytes);
-        }
-
+        failure = null;
         try
         {
-            return _safeDeletionService.DeleteFileOrDirectory(artifactPath, artifact.SizeBytes);
+            var projectRoot = Path.GetFullPath(projectPath);
+            var artifactPath = Path.GetFullPath(artifact.Path);
+            if (IsPathUnder(projectRoot, artifactPath) && IsAllowedArtifact(projectRoot, artifactPath, artifact.Type))
+            {
+                return true;
+            }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
         {
-            return new LeftoverRemovalResult(artifact.Path, false, ex.Message, artifact.SizeBytes);
+            failure = $"Purge target could not be revalidated ({ex.GetType().Name}).";
+            return false;
         }
+
+        failure = "Path is outside the purge preview scope or no longer matches an allowed artifact rule.";
+        return false;
     }
 
     private static bool IsPathUnder(string root, string path)

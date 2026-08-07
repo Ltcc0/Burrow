@@ -4,5 +4,7 @@ namespace BurrowWin.Services;
 
 public interface ISafeDeletionService
 {
-    LeftoverRemovalResult DeleteFileOrDirectory(string path, long sizeBytes);
+    Task<LeftoverRemovalResult> DeleteFileOrDirectoryAsync(
+        SafeDeletionRequest request,
+        CancellationToken cancellationToken = default);
 }

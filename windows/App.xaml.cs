@@ -31,6 +31,10 @@ public partial class App : Application
                 services.AddSingleton<IMoleEngineProbe, SystemMoleEngineProbe>();
                 services.AddSingleton<IOperationHistoryService, JsonOperationHistoryService>();
                 services.AddSingleton<IMoleEngineService, MoleEngineService>();
+                services.AddSingleton<IWindowsPathInspector, SystemWindowsPathInspector>();
+                services.AddSingleton<IWindowsPathSafetyPolicy, WindowsPathSafetyPolicy>();
+                services.AddSingleton<IRecycleBinBackend, VisualBasicRecycleBinBackend>();
+                services.AddSingleton<IDeletionReceiptStore, JsonDeletionReceiptStore>();
                 services.AddSingleton<ISafeDeletionService, RecycleBinDeletionService>();
                 services.AddSingleton<ISystemTelemetryService, WindowsSystemTelemetryService>();
                 services.AddSingleton<ISystemTelemetryHistoryService, JsonSystemTelemetryHistoryService>();

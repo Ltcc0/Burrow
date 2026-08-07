@@ -83,7 +83,7 @@ public sealed partial class UninstallPage : Page
         {
             XamlRoot = XamlRoot,
             Title = "Remove selected leftovers",
-            Content = "This permanently deletes the checked leftover paths. Protected roots are blocked, but the selected files cannot be restored from BurrowWin.",
+            Content = "BurrowWin will move only the checked leftover paths to the Windows Recycle Bin. Protected roots and unsafe path forms are blocked, and every path is checked again immediately before removal.",
             PrimaryButtonText = "Remove",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Close
@@ -92,7 +92,8 @@ public sealed partial class UninstallPage : Page
         var result = await dialog.ShowAsync();
         if (result == ContentDialogResult.Primary)
         {
-            await ViewModel.RemoveSelectedLeftoversAsync();
+            var authorization = ViewModel.CreateLeftoverRemovalAuthorization();
+            await ViewModel.RemoveSelectedLeftoversAsync(authorization);
         }
     }
 

@@ -45,7 +45,7 @@ public sealed partial class InstallerPage : Page
         var dialog = new ContentDialog
         {
             Title = "Remove old installers?",
-            Content = "BurrowWin will remove the selected files from the installer preview list.",
+            Content = "BurrowWin will move only the selected, previewed installer files to the Windows Recycle Bin. Paths are checked again immediately before removal.",
             PrimaryButtonText = "Remove",
             CloseButtonText = "Cancel",
             XamlRoot = XamlRoot
@@ -53,7 +53,8 @@ public sealed partial class InstallerPage : Page
 
         if (await dialog.ShowAsync() == ContentDialogResult.Primary)
         {
-            await ViewModel.RemoveAsync();
+            var authorization = ViewModel.CreateRemovalAuthorization();
+            await ViewModel.RemoveAsync(authorization);
         }
     }
 }

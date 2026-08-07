@@ -7,9 +7,44 @@ internal sealed class RecordingSafeDeletionService : ISafeDeletionService
 {
     public List<string> DeletedPaths { get; } = [];
 
-    public LeftoverRemovalResult DeleteFileOrDirectory(string path, long sizeBytes)
+    public List<SafeDeletionRequest> Requests { get; } = [];
+
+    public Task<LeftoverRemovalResult> DeleteFileOrDirectoryAsync(
+        SafeDeletionRequest request,
+        CancellationToken cancellationToken = default)
     {
-        DeletedPaths.Add(Path.GetFullPath(path));
-        return new LeftoverRemovalResult(path, true, "Moved to Recycle Bin.", sizeBytes);
+        Requests.Add(request);
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromResult(new LeftoverRemovalResult(
+                request.Path,
+                DeletionDisposition.Cancelled,
+                "Cancelled.",
+                request.SizeBytes,
+                request.Authorization.OperationId));
+        }
+
+        if (!request.BusinessRuleSatisfied)
+        {
+            return Task.FromResult(new LeftoverRemovalResult(
+                request.Path,
+                DeletionDisposition.Rejected,
+                request.BusinessRuleFailure ?? "Rejected.",
+                request.SizeBytes,
+                request.Authorization.OperationId));
+        }
+
+        var canonicalPath = Path.GetFullPath(request.Path);
+        DeletedPaths.Add(canonicalPath);
+        return Task.FromResult(new LeftoverRemovalResult(
+            request.Path,
+            DeletionDisposition.Recycled,
+            "Moved to Recycle Bin.",
+            request.SizeBytes,
+            request.Authorization.OperationId,
+            canonicalPath,
+            DateTimeOffset.UtcNow,
+            "shell:RecycleBinFolder",
+            true));
     }
 }

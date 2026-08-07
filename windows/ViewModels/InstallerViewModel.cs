@@ -13,6 +13,7 @@ public partial class InstallerViewModel : ViewModelBase
     private readonly IInstallerCleanupService _installerCleanupService;
     private readonly IMoleEngineService _moleEngineService;
     private readonly IOperationHistoryService _operationHistoryService;
+    private CancellationTokenSource? _operationCts;
 
     public InstallerViewModel(
         IInstallerCleanupService installerCleanupService,
@@ -43,16 +44,26 @@ public partial class InstallerViewModel : ViewModelBase
     [ObservableProperty]
     private string engineSummary = "Mole Windows has no dedicated installer command yet; this view mirrors Mole's old Downloads installer/archive rules.";
 
+    [ObservableProperty]
+    private string progressText = "old Downloads installers";
+
     public string OutputText => string.Join(Environment.NewLine, OutputLines);
+
+    public bool CanCancel => IsBusy && _operationCts is { IsCancellationRequested: false };
 
     [RelayCommand]
     public async Task ScanAsync()
     {
+        if (IsBusy)
+        {
+            return;
+        }
+
         var startedAt = Stopwatch.GetTimestamp();
-        var succeeded = false;
+        var exitCode = 1;
         var historySummary = "Installer preview did not finish";
 
-        IsBusy = true;
+        var cancellationToken = BeginOperation("Scanning old installers...");
         CanRemove = false;
         ClearItems();
         OutputLines.Clear();
@@ -62,8 +73,8 @@ public partial class InstallerViewModel : ViewModelBase
         try
         {
             var availability = _moleEngineService.GetAvailability();
-            var items = await _installerCleanupService.PreviewAsync().ConfigureAwait(false);
-            succeeded = true;
+            var items = await _installerCleanupService.PreviewAsync(cancellationToken).ConfigureAwait(false);
+            exitCode = 0;
             historySummary = BuildPreviewSummary(items);
 
             RunOnUiThread(() =>
@@ -83,36 +94,47 @@ public partial class InstallerViewModel : ViewModelBase
                 UpdateSelectionState();
             });
         }
+        catch (OperationCanceledException)
+        {
+            exitCode = 130;
+            historySummary = "Installer preview cancelled";
+            RunOnUiThread(() => Summary = historySummary);
+        }
         finally
         {
             await RecordHistoryAsync(
                 "installer-preview",
                 "old Downloads installers",
-                succeeded,
+                exitCode,
                 Stopwatch.GetElapsedTime(startedAt),
                 historySummary).ConfigureAwait(false);
 
-            RunOnUiThread(() =>
-            {
-                IsBusy = false;
-                UpdateSelectionState();
-            });
+            RunOnUiThread(EndOperation);
         }
     }
 
-    public async Task RemoveAsync()
+    public DestructiveActionAuthorization CreateRemovalAuthorization()
     {
+        return DestructiveActionAuthorization.Confirmed(
+            InstallerCleanupService.DeletionSource,
+            Items.Where(item => item.IsSelected).Select(item => item.Path));
+    }
+
+    public async Task RemoveAsync(DestructiveActionAuthorization authorization)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+
         var selected = Items.Where(item => item.IsSelected).ToList();
-        if (selected.Count == 0)
+        if (selected.Count == 0 || IsBusy)
         {
             return;
         }
 
         var startedAt = Stopwatch.GetTimestamp();
-        var succeeded = false;
+        var exitCode = 1;
         var historySummary = "Installer removal did not finish";
 
-        IsBusy = true;
+        var cancellationToken = BeginOperation("Removing selected installers...");
         CanRemove = false;
         OutputLines.Clear();
         OnPropertyChanged(nameof(OutputText));
@@ -120,19 +142,18 @@ public partial class InstallerViewModel : ViewModelBase
 
         try
         {
-            var results = await _installerCleanupService.RemoveAsync(selected).ConfigureAwait(false);
-            var removedBytes = results.Where(result => result.Succeeded).Sum(result => result.SizeBytes);
-            var failedCount = results.Count(result => !result.Succeeded);
-            succeeded = failedCount == 0;
-            historySummary = failedCount == 0
-                ? $"Removed {results.Count} files, freed {SystemTelemetryFormatter.Bytes(removedBytes)}"
-                : $"Removed {results.Count - failedCount} files; {failedCount} failed";
+            var progress = new Progress<DeletionProgress>(UpdateProgress);
+            var batch = await _installerCleanupService
+                .RemoveAsync(selected, authorization, progress, cancellationToken)
+                .ConfigureAwait(false);
+            exitCode = ExitCodeFor(batch);
+            historySummary = BuildRemovalSummary(batch);
 
             RunOnUiThread(() =>
             {
-                foreach (var result in results)
+                foreach (var result in batch.Results)
                 {
-                    var prefix = result.Succeeded ? "removed" : "failed";
+                    var prefix = result.Disposition.ToString().ToLowerInvariant();
                     OutputLines.Add($"{prefix}: {result.Path} ({SystemTelemetryFormatter.Bytes(result.SizeBytes)}) {result.Message}");
                 }
 
@@ -145,16 +166,21 @@ public partial class InstallerViewModel : ViewModelBase
             await RecordHistoryAsync(
                 "installer-remove",
                 $"{selected.Count} selected old Downloads installers",
-                succeeded,
+                exitCode,
                 Stopwatch.GetElapsedTime(startedAt),
                 historySummary).ConfigureAwait(false);
 
-            RunOnUiThread(() =>
-            {
-                IsBusy = false;
-                UpdateSelectionState();
-            });
+            RunOnUiThread(EndOperation);
         }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanCancel))]
+    public void Cancel()
+    {
+        _operationCts?.Cancel();
+        ProgressText = "Cancelling after the current item...";
+        OnPropertyChanged(nameof(CanCancel));
+        CancelCommand.NotifyCanExecuteChanged();
     }
 
     [RelayCommand]
@@ -217,10 +243,66 @@ public partial class InstallerViewModel : ViewModelBase
         return $"{items.Count} files - {SystemTelemetryFormatter.Bytes(totalBytes)}";
     }
 
+    private CancellationToken BeginOperation(string progressText)
+    {
+        _operationCts?.Dispose();
+        _operationCts = new CancellationTokenSource();
+        ProgressText = progressText;
+        IsBusy = true;
+        OnPropertyChanged(nameof(CanCancel));
+        CancelCommand.NotifyCanExecuteChanged();
+        return _operationCts.Token;
+    }
+
+    private void EndOperation()
+    {
+        _operationCts?.Dispose();
+        _operationCts = null;
+        IsBusy = false;
+        ProgressText = "old Downloads installers";
+        OnPropertyChanged(nameof(CanCancel));
+        CancelCommand.NotifyCanExecuteChanged();
+        UpdateSelectionState();
+    }
+
+    private void UpdateProgress(DeletionProgress progress)
+    {
+        RunOnUiThread(() =>
+        {
+            ProgressText = progress.TotalCount == 0
+                ? "No selected installers"
+                : $"{progress.ProcessedCount}/{progress.TotalCount} processed · {progress.RecycledCount} recycled";
+        });
+    }
+
+    private static int ExitCodeFor(DeletionBatchResult batch)
+    {
+        return batch.Outcome switch
+        {
+            DeletionBatchOutcome.Succeeded => 0,
+            DeletionBatchOutcome.Cancelled => 130,
+            DeletionBatchOutcome.PartialSuccess => 2,
+            _ => 1
+        };
+    }
+
+    private static string BuildRemovalSummary(DeletionBatchResult batch)
+    {
+        var prefix = batch.Outcome switch
+        {
+            DeletionBatchOutcome.Succeeded => "Completed",
+            DeletionBatchOutcome.Cancelled => "Cancelled",
+            DeletionBatchOutcome.PartialSuccess => "Partially completed",
+            _ => "Failed"
+        };
+        return $"{prefix}: {batch.RecycledCount} recycled, {batch.AlreadyAbsentCount} already absent, " +
+               $"{batch.RejectedCount} rejected, {batch.FailedCount} failed · {SystemTelemetryFormatter.Bytes(batch.RecycledBytes)}";
+    }
+
     private async Task RecordHistoryAsync(
         string operation,
         string arguments,
-        bool succeeded,
+        int exitCode,
         TimeSpan duration,
         string historySummary)
     {
@@ -229,8 +311,8 @@ public partial class InstallerViewModel : ViewModelBase
             "burrowwin",
             operation,
             arguments,
-            succeeded ? 0 : 1,
-            succeeded,
+            exitCode,
+            exitCode == 0,
             (long)duration.TotalMilliseconds,
             historySummary);
 

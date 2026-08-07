@@ -273,11 +273,13 @@ public sealed class LocalMcpServerServiceTests
             return Task.FromResult(new MoleCommandResult(0, "ok", string.Empty, false, TimeSpan.Zero));
         }
 
-        public Task<IReadOnlyList<LeftoverRemovalResult>> RemoveLeftoversAsync(
+        public Task<DeletionBatchResult> RemoveLeftoversAsync(
             IEnumerable<LeftoverCandidate> leftovers,
+            DestructiveActionAuthorization authorization,
+            IProgress<DeletionProgress>? progress = null,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<LeftoverRemovalResult>>([]);
+            return Task.FromResult(DeletionBatchResult.Empty(authorization));
         }
     }
 
@@ -315,11 +317,13 @@ public sealed class LocalMcpServerServiceTests
             return Task.FromResult(_projects);
         }
 
-        public Task<IReadOnlyList<LeftoverRemovalResult>> RemoveAsync(
+        public Task<DeletionBatchResult> RemoveAsync(
             IReadOnlyList<PurgeProjectCandidate> projects,
+            DestructiveActionAuthorization authorization,
+            IProgress<DeletionProgress>? progress = null,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<LeftoverRemovalResult>>([]);
+            return Task.FromResult(DeletionBatchResult.Empty(authorization));
         }
     }
 
@@ -349,11 +353,13 @@ public sealed class LocalMcpServerServiceTests
             return Task.FromResult(_candidates);
         }
 
-        public Task<IReadOnlyList<LeftoverRemovalResult>> RemoveAsync(
+        public Task<DeletionBatchResult> RemoveAsync(
             IReadOnlyList<InstallerCleanupCandidate> candidates,
+            DestructiveActionAuthorization authorization,
+            IProgress<DeletionProgress>? progress = null,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<LeftoverRemovalResult>>([]);
+            return Task.FromResult(DeletionBatchResult.Empty(authorization));
         }
     }
 

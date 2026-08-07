@@ -29,6 +29,7 @@ Current Windows-specific adaptations:
 - Cleanup is currently a guarded pending route in the WinUI preview. It does not claim a stable GUI preview/removal flow until Mole Windows exposes a safe non-interactive cleanup contract.
 - Purge now uses a Burrow-style non-interactive preview/removal flow built from the same Windows Mole project markers and artifact patterns because Mole Windows `mo purge` is an interactive selector and does not expose `--dry-run`.
 - Installers uses a Burrow-style preview/removal flow for old top-level Downloads installers and archives, mirroring Mole Windows `Clear-OldDownloads` rules because Mole Windows documents that there is no dedicated installer-file cleanup command yet.
+- Purge, Installers, and uninstall-leftover fallbacks now share one confirmation-bound Recycle Bin pipeline. It canonicalizes paths, rejects roots, traversal, UNC/device/ADS forms, protected Windows locations, junctions, and symlinks, revalidates immediately before the Shell call, records JSONL recovery receipts at `%LOCALAPPDATA%\BurrowWin\deletion-receipts.jsonl`, and reports cancelled/partial batches without claiming unprocessed bytes.
 - Optimize uses Mole `optimize --dry-run` for preview and requires explicit confirmation before real `mo optimize` changes.
 - Uninstall lists installed apps natively, auto-loads the inventory on first view, supports search plus size/name/source sorting, and launches vendor uninstallers only after confirmation because the current Mole uninstall command is interactive.
 - History and Activity are persisted locally and surfaced in the GUI and MCP/HTTP paths. Mole command executions, Windows uninstall actions, and BurrowWin native fallback preview/removal flows now write into the same operation history.
@@ -46,6 +47,8 @@ Current Windows-specific adaptations:
 - Windows installation now follows upstream Burrow's package-manager-first rhythm: WinGet package `Caezium.Burrow` is the recommended user path, while direct setup exe and ZIP downloads remain fallback paths.
 
 ## Latest verification
+
+- BUR-10 adds adversarial unit coverage for root, traversal, device, UNC, alternate-stream, out-of-scope, junction, and symlink paths; deletion-boundary authorization/revalidation and recovery receipts; and cancellation/monotonic partial-progress behavior. The current non-Windows workspace does not contain the .NET or Windows SDK, so these new cases must pass the Windows CI build before BUR-10 is considered complete.
 
 - `dotnet build BurrowWin.csproj -p:Platform=x64 -nr:false -v:minimal` succeeds with 0 warnings and 0 errors.
 - `dotnet build Tests\BurrowWin.Tests\BurrowWin.Tests.csproj -nr:false -v:minimal` succeeds with 0 warnings and 0 errors.
@@ -91,7 +94,7 @@ Current Windows-specific adaptations:
 - Move history storage closer to upstream Burrow's SQLite/WAL model or prove the JSONL store meets the same retention, pruning, and query requirements.
 - Broaden History screenshot/UI automation from the default rendered range to explicit range-switching interactions.
 - Replace Windows fallbacks with Mole JSON paths when the Mole windows branch exposes safe non-interactive contracts for status, analyze, uninstall, purge, and installer scans.
-- Keep hardening destructive operations through shared Recycle Bin deletion, strict path guards, cancellation, progress streaming, operation-center activity state, and explicit confirmation gates.
+- Surface deletion receipts in the operation-center UI so users can open the Windows Recycle Bin directly from a completed recovery record.
 - Add pixel/interaction comparison for the Windows Burrow visual shell against the upstream reference screens, beyond the current route-level screenshot smoke.
 
 ## Completion criteria for this port

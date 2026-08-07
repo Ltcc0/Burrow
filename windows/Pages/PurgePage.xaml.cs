@@ -20,7 +20,7 @@ public sealed partial class PurgePage : Page
         var dialog = new ContentDialog
         {
             Title = "Remove project artifacts?",
-            Content = "BurrowWin will remove the selected build artifacts from the preview list.",
+            Content = "BurrowWin will move only the selected, previewed build artifacts to the Windows Recycle Bin. Paths are checked again immediately before removal.",
             PrimaryButtonText = "Remove",
             CloseButtonText = "Cancel",
             XamlRoot = XamlRoot
@@ -28,7 +28,8 @@ public sealed partial class PurgePage : Page
 
         if (await dialog.ShowAsync() == ContentDialogResult.Primary)
         {
-            await ViewModel.RemoveAsync();
+            var authorization = ViewModel.CreateRemovalAuthorization();
+            await ViewModel.RemoveAsync(authorization);
         }
     }
 }

@@ -4,6 +4,8 @@ namespace BurrowWin.Services;
 
 public sealed class InstallerCleanupService : IInstallerCleanupService
 {
+    public const string DeletionSource = "installer";
+
     private const int DefaultDaysOld = 30;
 
     private static readonly string[] InstallerPatterns =
@@ -100,21 +102,35 @@ public sealed class InstallerCleanupService : IInstallerCleanupService
         }, cancellationToken);
     }
 
-    public Task<IReadOnlyList<LeftoverRemovalResult>> RemoveAsync(
+    public Task<DeletionBatchResult> RemoveAsync(
         IReadOnlyList<InstallerCleanupCandidate> candidates,
+        DestructiveActionAuthorization authorization,
+        IProgress<DeletionProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        return Task.Run(() =>
-        {
-            var results = new List<LeftoverRemovalResult>();
-            foreach (var candidate in candidates)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                results.Add(RemoveCandidate(candidate));
-            }
+        ArgumentNullException.ThrowIfNull(candidates);
+        ArgumentNullException.ThrowIfNull(authorization);
 
-            return (IReadOnlyList<LeftoverRemovalResult>)results;
-        }, cancellationToken);
+        var requests = candidates.Select(candidate =>
+        {
+            var businessRuleSatisfied = IsCandidateStillAllowed(candidate, out var failure);
+            return new SafeDeletionRequest(
+                candidate.Path,
+                candidate.SizeBytes,
+                _downloadsPath,
+                DeletionSource,
+                authorization,
+                "File",
+                businessRuleSatisfied,
+                failure);
+        }).ToArray();
+
+        return SafeDeletionBatchRunner.RunAsync(
+            _safeDeletionService,
+            requests,
+            authorization,
+            progress,
+            cancellationToken);
     }
 
     private InstallerCleanupCandidate? BuildCandidate(string file, DateTimeOffset cutoffUtc)
@@ -147,22 +163,25 @@ public sealed class InstallerCleanupService : IInstallerCleanupService
         }
     }
 
-    private LeftoverRemovalResult RemoveCandidate(InstallerCleanupCandidate candidate)
+    private bool IsCandidateStillAllowed(InstallerCleanupCandidate candidate, out string? failure)
     {
-        var candidatePath = Path.GetFullPath(candidate.Path);
-        if (!IsPathDirectlyInDownloads(candidatePath) || !IsInstallerPattern(candidatePath))
-        {
-            return new LeftoverRemovalResult(candidate.Path, false, "Path is outside the installer preview scope.", candidate.SizeBytes);
-        }
-
+        failure = null;
         try
         {
-            return _safeDeletionService.DeleteFileOrDirectory(candidatePath, candidate.SizeBytes);
+            var candidatePath = Path.GetFullPath(candidate.Path);
+            if (IsPathDirectlyInDownloads(candidatePath) && IsInstallerPattern(candidatePath))
+            {
+                return true;
+            }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
         {
-            return new LeftoverRemovalResult(candidate.Path, false, ex.Message, candidate.SizeBytes);
+            failure = $"Installer target could not be revalidated ({ex.GetType().Name}).";
+            return false;
         }
+
+        failure = "Path is outside the installer preview scope or no longer matches an allowed installer pattern.";
+        return false;
     }
 
     private bool IsPathDirectlyInDownloads(string fullPath)
