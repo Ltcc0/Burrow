@@ -112,11 +112,10 @@ enum MoleCLI {
     }
 
     /// Build the `do shell script` source for one elevated invocation:
-    /// every argv element single-quoted for the shell, the whole command
-    /// then escaped for embedding in an AppleScript string literal, and an
-    /// optional output redirect to a (quoted) log file. The ONE builder
-    /// shared by every elevated path, so the two escaping passes can't
-    /// drift apart again (one runner had them, the other didn't).
+    /// every argv element is single-quoted for the shell, then the whole
+    /// command is escaped for embedding in an AppleScript string literal.
+    /// The ONE builder is shared by every elevated path so the two escaping
+    /// passes can't drift apart again (one runner had them, the other didn't).
     ///
     /// Prompt model (audited against mo 1.42, June 2026). One elevated run
     /// = one osascript invocation = exactly ONE admin password prompt:
@@ -133,16 +132,76 @@ enum MoleCLI {
     ///     next — re-prompting per run is OS policy, not a Burrow bug.
     ///     Pooling them would take a resident privileged helper
     ///     (SMAppService daemon + XPC), a deliberate non-goal for now.
-    static func elevatedScript(executable: String, args: [String],
-                               redirectTo logPath: String? = nil) -> String {
-        func shQuote(_ s: String) -> String {
-            "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    static func elevatedScript(executable: String, args: [String]) -> String {
+        appleScript(shellCommand(executable: executable, args: args))
+    }
+
+    /// A pathname-free output envelope for the streaming elevated runner.
+    ///
+    /// `do shell script` buffers the privileged command's result, so live
+    /// elevated streaming is not possible without a filesystem handoff. We
+    /// instead merge the command's stderr into stdout, append a per-run exit
+    /// marker, and let osascript return the complete envelope through the
+    /// anonymous stdout pipe that Burrow opened before launch. The root shell
+    /// never receives an output pathname and therefore cannot follow or race
+    /// a user-controlled symlink.
+    struct ElevatedCaptureScript: Sendable, Equatable {
+        let source: String
+        let exitMarker: String
+
+        struct Decoded: Sendable, Equatable {
+            let output: String
+            let exitCode: Int32
         }
-        var raw = ([executable] + args).map(shQuote).joined(separator: " ")
-        if let logPath { raw += " > \(shQuote(logPath)) 2>&1" }
+
+        /// Strip the private terminal marker from osascript's stdout and
+        /// recover the privileged command's actual exit status. Searching
+        /// backwards makes an accidental marker-shaped prefix in tool output
+        /// harmless; production markers also contain a fresh UUID per run.
+        func decode(_ data: Data) -> Decoded? {
+            let text = String(decoding: data, as: UTF8.self)
+            let delimiter = "\n\(exitMarker)"
+            guard let markerRange = text.range(of: delimiter, options: .backwards) else {
+                return nil
+            }
+            let status = text[markerRange.upperBound...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let exitCode = Int32(status) else { return nil }
+            return Decoded(output: String(text[..<markerRange.lowerBound]), exitCode: exitCode)
+        }
+    }
+
+    static func elevatedCaptureScript(executable: String, args: [String],
+                                      exitMarker: String = "__BURROW_EXIT_\(UUID().uuidString)__=")
+        -> ElevatedCaptureScript {
+        let command = shellCommand(executable: executable, args: args)
+        // The final printf deliberately determines the shell's status so a
+        // command failure is returned as data instead of becoming an
+        // AppleScript error. Authorization cancellation still prevents the
+        // shell from running at all, leaving stdout (and the marker) empty.
+        let raw = command
+            + " 2>&1; burrow_status=$?; printf '\\n%s%d\\n' "
+            + shQuote(exitMarker)
+            + " \"$burrow_status\""
+        return ElevatedCaptureScript(
+            source: appleScript(raw, preserveLineEndings: true),
+            exitMarker: exitMarker
+        )
+    }
+
+    private static func shellCommand(executable: String, args: [String]) -> String {
+        ([executable] + args).map(shQuote).joined(separator: " ")
+    }
+
+    private static func shQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func appleScript(_ raw: String, preserveLineEndings: Bool = false) -> String {
         let inner = raw.replacingOccurrences(of: "\\", with: "\\\\")
                        .replacingOccurrences(of: "\"", with: "\\\"")
-        return "do shell script \"\(inner)\" with administrator privileges"
+        let suffix = preserveLineEndings ? " without altering line endings" : ""
+        return "do shell script \"\(inner)\" with administrator privileges\(suffix)"
     }
 
     // MARK: - Install / version
@@ -288,7 +347,7 @@ enum MoleCLI {
     // waiting for a caller.
     //
     // The elevation machinery itself is still very much alive — the streaming
-    // path (`OperationFlow.SystemProcessPort`) uses `elevatedScript` above,
-    // and Connectivity's flush-DNS / renew-DHCP fixes call
+    // path (`OperationFlow.SystemProcessPort`) uses `elevatedCaptureScript`
+    // above, and Connectivity's flush-DNS / renew-DHCP fixes call
     // `SystemPrivilegeBroker.openElevated` directly.
 }

@@ -14,9 +14,9 @@
 //  while tests inject a fake to drive the build-the-osascript-spec quoting
 //  and the auth-cancel classification IN MEMORY — no auth dialog, no sudo.
 //
-//  Streamed elevated runs stay in OperationFlow's SystemProcessPort (output
-//  tailed from a temp log); this seam covers one-shot commands where the only
-//  signal is the exit status.
+//  Streamed elevated runs stay in OperationFlow's SystemProcessPort (buffered
+//  through osascript's anonymous stdout pipe); this seam covers one-shot
+//  commands where the only signal is the exit status.
 //
 //  Live caller: `Connectivity.run` (flush DNS / renew DHCP), which constructs
 //  `SystemPrivilegeBroker` directly. The `MoleCLI.runElevated` wrapper that

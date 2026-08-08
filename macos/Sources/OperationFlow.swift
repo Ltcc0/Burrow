@@ -334,12 +334,35 @@ extension ToolOperation where Report == TaskRunReport {
 
 // MARK: - Production adapter
 
-/// The streaming-op spawn mechanics: plain runs stream
-/// stdout+stderr through pipes; elevated runs go through ONE osascript auth
-/// prompt with output tailed from a temp log (`do shell script` doesn't
-/// stream); stdin is fed then closed; a timeout kills the child. All output
+/// The streaming-op spawn mechanics: plain runs stream stdout+stderr through
+/// pipes; elevated runs go through ONE osascript auth prompt and return a
+/// buffered output envelope through osascript's anonymous stdout pipe (`do
+/// shell script` doesn't stream). No privileged command ever opens an output
+/// pathname. stdin is fed then closed; a timeout kills the child. All output
 /// is ANSI-stripped and newline-split before it reaches the flow.
 struct SystemProcessPort: ProcessPort {
+    struct Invocation: Sendable {
+        let executableURL: URL
+        let arguments: [String]
+    }
+
+    typealias ElevatedInvocation = @Sendable (MoleCLI.ElevatedCaptureScript) -> Invocation
+
+    private let elevatedInvocation: ElevatedInvocation
+    private let didCleanup: @Sendable () -> Void
+
+    /// `elevatedInvocation` is the deterministic no-auth test seam. Production
+    /// always launches osascript; tests substitute a tiny ordinary process but
+    /// exercise the exact envelope, pipe, ordering, timeout, and cleanup path.
+    init(elevatedInvocation: ElevatedInvocation? = nil,
+         didCleanup: @escaping @Sendable () -> Void = {}) {
+        self.elevatedInvocation = elevatedInvocation ?? { capture in
+            Invocation(executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                       arguments: ["-e", capture.source])
+        }
+        self.didCleanup = didCleanup
+    }
+
     func events(_ spec: ProcessSpec) -> AsyncStream<ProcessEvent> {
         AsyncStream { cont in
             let splitter = LineSplitter()
@@ -352,21 +375,33 @@ struct SystemProcessPort: ProcessPort {
             // silently drop lines — an intermittent CI failure that surfaced as
             // [] or ["a"] instead of ["a","b"].)
             let streamQ = DispatchQueue(label: "dev.caezium.burrow.opflow.stream")
-            var tailTimer: Timer?
-            var logHandle: FileHandle?
-            var killTimer: DispatchSourceTimer?
+            let outPipe = Pipe(), errPipe = Pipe()
+            let inPipe: Pipe? = (!spec.elevated && spec.stdin != nil) ? Pipe() : nil
+            let resources = RunResources(outPipe: outPipe, errPipe: errPipe,
+                                         inPipe: inPipe, didCleanup: didCleanup)
+            let elevatedPipes = CapturedPipes()
+            let captureScript: MoleCLI.ElevatedCaptureScript?
 
             func emit(_ s: String) {                       // streamQ only
-                for line in splitter.ingest(Ansi.strip(s)) { cont.yield(.line(line)) }
+                for line in splitter.ingest(s) { cont.yield(.line(line)) }
             }
-            func finish(_ code: Int32) {                   // streamQ only
+            func flushLines() {                            // streamQ only
                 for line in splitter.flush() { cont.yield(.line(line)) }
-                cont.yield(Self.finalEvent(exitCode: code, elevated: spec.elevated,
-                                           sawOutput: splitter.sawAnyLine))
+            }
+            func finish(_ event: ProcessEvent) {           // streamQ only
+                flushLines()
+                cont.yield(event)
                 cont.finish()
             }
-
-            let outPipe = Pipe(), errPipe = Pipe()
+            func finish(_ code: Int32) {                   // streamQ only
+                // Flush before classification: a command whose only output is
+                // one unterminated final line still produced output and must
+                // not be mistaken for authorization cancellation.
+                flushLines()
+                cont.yield(Self.finalEvent(exitCode: code, elevated: spec.elevated,
+                                           sawOutput: splitter.sawAnyOutput))
+                cont.finish()
+            }
 
             if spec.elevated {
                 // The osascript `do shell script` wrapper has no stdin channel,
@@ -375,67 +410,35 @@ struct SystemProcessPort: ProcessPort {
                 // assert so the unsupported combo fails loudly rather than
                 // silently dropping the input if someone wires it up later.
                 assert(spec.stdin == nil, "elevated runs don't support stdin")
-                let safe = spec.arguments.map { $0.filter(\.isLetter) }.joined(separator: "-")
-                let logPath = NSTemporaryDirectory() + "burrow-op-\(safe).log"
-                FileManager.default.createFile(atPath: logPath, contents: Data())
-                let script = MoleCLI.elevatedScript(executable: spec.executable,
-                                                    args: spec.arguments, redirectTo: logPath)
-                t.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                t.arguments = ["-e", script]
-                t.standardOutput = outPipe
-                t.standardError = errPipe
-
-                let handle = FileHandle(forReadingAtPath: logPath)
-                logHandle = handle
-                let timer = Timer(timeInterval: 0.3, repeats: true) { _ in
-                    guard let h = handle else { return }
-                    let data = h.readDataToEndOfFile()
-                    guard !data.isEmpty, let s = String(data: data, encoding: .utf8) else { return }
-                    streamQ.async { emit(s) }
-                }
-                RunLoop.main.add(timer, forMode: .common)
-                tailTimer = timer
-
-                t.terminationHandler = { proc in
-                    killTimer?.cancel()
-                    DispatchQueue.main.async { tailTimer?.invalidate() }
-                    streamQ.async {
-                        if let h = logHandle {                  // last tail of the log
-                            let data = h.readDataToEndOfFile()
-                            if !data.isEmpty, let s = String(data: data, encoding: .utf8) { emit(s) }
-                            try? h.close()
-                        }
-                        finish(proc.terminationStatus)
-                    }
-                }
+                let capture = MoleCLI.elevatedCaptureScript(executable: spec.executable,
+                                                            args: spec.arguments)
+                captureScript = capture
+                let invocation = elevatedInvocation(capture)
+                t.executableURL = invocation.executableURL
+                t.arguments = invocation.arguments
             } else {
+                captureScript = nil
                 t.executableURL = URL(fileURLWithPath: spec.executable)
                 t.arguments = spec.arguments
-                t.standardOutput = outPipe
-                t.standardError = errPipe
-                if let stdin = spec.stdin {
-                    let inPipe = Pipe()
+                if let inPipe {
                     t.standardInput = inPipe
-                    inPipe.fileHandleForWriting.write(Data(stdin.utf8))
-                    inPipe.fileHandleForWriting.closeFile()
                 }
             }
+            t.standardOutput = outPipe
+            t.standardError = errPipe
 
             cont.onTermination = { @Sendable _ in
-                DispatchQueue.main.async { tailTimer?.invalidate() }
                 if t.isRunning { t.terminate() }
             }
 
             do {
                 try t.run()
-                if !spec.elevated {
-                    // Process inherits duplicated write descriptors during
-                    // spawn; the parent must close its copies so the readers
-                    // observe EOF after the child exits. Keeping these handles
-                    // open can strand the stream forever after a timeout even
-                    // though terminate() successfully killed the child.
-                    try? outPipe.fileHandleForWriting.close()
-                    try? errPipe.fileHandleForWriting.close()
+                // Process inherits duplicated descriptors during spawn; close
+                // every parent write end so readers observe EOF after exit.
+                resources.closeParentWriteEnds()
+                if let inPipe, let stdin = spec.stdin {
+                    try? inPipe.fileHandleForWriting.write(contentsOf: Data(stdin.utf8))
+                    try? inPipe.fileHandleForWriting.close()
                 }
                 // Armed only after a successful spawn (a suspended source
                 // must never be cancelled/deallocated).
@@ -444,33 +447,48 @@ struct SystemProcessPort: ProcessPort {
                     k.schedule(deadline: .now() + timeout, repeating: .never)
                     k.setEventHandler { if t.isRunning { t.terminate() } }
                     k.resume()
-                    killTimer = k
+                    resources.arm(k)
                 }
-                if !spec.elevated {
-                    // Dedicated blocking reader per pipe, started only after a
-                    // successful spawn (so a failed launch can't leak them).
-                    // Each drains its pipe to EOF; ingest+yield hop synchronously
-                    // onto streamQ; completion fires via the group ONLY once both
-                    // pipes are at EOF — so finish() is strictly last and no line
-                    // is lost (see streamQ note above).
-                    let group = DispatchGroup()
-                    for fh in [outPipe.fileHandleForReading, errPipe.fileHandleForReading] {
-                        group.enter()
-                        DispatchQueue.global(qos: .utility).async {
+
+                // Dedicated blocking reader per pipe, started only after a
+                // successful spawn (so a failed launch can't leak them). Both
+                // pipes reach EOF before the terminal event; this keeps final
+                // line ordering deterministic for plain and elevated runs.
+                let group = DispatchGroup()
+                for (index, fh) in [outPipe.fileHandleForReading,
+                                    errPipe.fileHandleForReading].enumerated() {
+                    group.enter()
+                    DispatchQueue.global(qos: .utility).async {
+                        if spec.elevated {
+                            let data = fh.readDataToEndOfFile()
+                            elevatedPipes.set(data, stdout: index == 0)
+                        } else {
                             while case let d = fh.availableData, !d.isEmpty {
                                 if let s = String(data: d, encoding: .utf8) { streamQ.sync { emit(s) } }
                             }
-                            group.leave()
                         }
+                        group.leave()
                     }
-                    group.notify(queue: streamQ) {
-                        killTimer?.cancel()
-                        t.waitUntilExit()
+                }
+                group.notify(queue: streamQ) {
+                    t.waitUntilExit()
+                    resources.cleanup()
+                    if let captureScript,
+                       let decoded = captureScript.decode(elevatedPipes.stdout) {
+                        emit(decoded.output)
+                        finish(decoded.exitCode)
+                    } else if spec.elevated, t.terminationStatus == 0 {
+                        // A successful osascript without our marker violates
+                        // the transport protocol. It is a launch/protocol
+                        // failure, not an authorization cancellation.
+                        finish(.exited(127))
+                    } else {
                         finish(t.terminationStatus)
                     }
                 }
             } catch {
-                streamQ.async { finish(127) }
+                resources.cleanup()
+                streamQ.async { finish(.exited(127)) }
             }
         }
     }
@@ -487,31 +505,106 @@ struct SystemProcessPort: ProcessPort {
         return .exited(exitCode)
     }
 
+    /// Owns every descriptor/timer created for one run. Cleanup is idempotent
+    /// and occurs before the terminal event on all completed paths; stream
+    /// cancellation terminates the child, whose EOF path reaches the same
+    /// cleanup. No temporary filesystem artifact exists to remove.
+    private final class RunResources: @unchecked Sendable {
+        private let lock = NSLock()
+        private let outPipe: Pipe
+        private let errPipe: Pipe
+        private let inPipe: Pipe?
+        private let didCleanup: @Sendable () -> Void
+        private var timer: DispatchSourceTimer?
+        private var cleaned = false
+
+        init(outPipe: Pipe, errPipe: Pipe, inPipe: Pipe?,
+             didCleanup: @escaping @Sendable () -> Void) {
+            self.outPipe = outPipe
+            self.errPipe = errPipe
+            self.inPipe = inPipe
+            self.didCleanup = didCleanup
+        }
+
+        func closeParentWriteEnds() {
+            try? outPipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
+        }
+
+        func arm(_ timer: DispatchSourceTimer) {
+            lock.lock(); defer { lock.unlock() }
+            guard !cleaned else {
+                timer.cancel()
+                return
+            }
+            self.timer = timer
+        }
+
+        func cleanup() {
+            lock.lock()
+            guard !cleaned else {
+                lock.unlock()
+                return
+            }
+            cleaned = true
+            let timer = self.timer
+            self.timer = nil
+            lock.unlock()
+
+            timer?.cancel()
+            for handle in [outPipe.fileHandleForReading, outPipe.fileHandleForWriting,
+                           errPipe.fileHandleForReading, errPipe.fileHandleForWriting] {
+                try? handle.close()
+            }
+            if let inPipe {
+                try? inPipe.fileHandleForReading.close()
+                try? inPipe.fileHandleForWriting.close()
+            }
+            didCleanup()
+        }
+    }
+
+    private final class CapturedPipes: @unchecked Sendable {
+        private let lock = NSLock()
+        private var out = Data()
+        private var err = Data()
+
+        func set(_ data: Data, stdout: Bool) {
+            lock.lock(); defer { lock.unlock() }
+            if stdout { out = data } else { err = data }
+        }
+
+        var stdout: Data {
+            lock.lock(); defer { lock.unlock() }
+            return out
+        }
+    }
+
     /// Buffers partial chunks and emits whole lines; thread-confined to
-    /// whichever handler feeds it (pipe readability or the log tail timer).
+    /// the serial stream queue.
     private final class LineSplitter: @unchecked Sendable {
         private var buffer = ""
-        private var emitted = false
+        private var observedOutput = false
         private let lock = NSLock()
-        /// Whether any line has been emitted — the auth-cancel classifier's
-        /// "did the run produce output" input, tracked where lines are made.
-        var sawAnyLine: Bool {
+        /// Whether the child produced any bytes — the auth-cancel classifier's
+        /// input. This is intentionally tracked before ANSI stripping, so even
+        /// an unterminated or formatting-only diagnostic proves the command ran.
+        var sawAnyOutput: Bool {
             lock.lock(); defer { lock.unlock() }
-            return emitted
+            return observedOutput
         }
         func ingest(_ s: String) -> [String] {
             lock.lock(); defer { lock.unlock() }
-            buffer += s
+            if !s.isEmpty { observedOutput = true }
+            buffer += Ansi.strip(s)
             var parts = buffer.components(separatedBy: "\n")
             buffer = parts.removeLast()
-            if !parts.isEmpty { emitted = true }
             return parts
         }
         func flush() -> [String] {
             lock.lock(); defer { lock.unlock() }
             let rest = buffer
             buffer = ""
-            if !rest.isEmpty { emitted = true }
             return rest.isEmpty ? [] : [rest]
         }
     }

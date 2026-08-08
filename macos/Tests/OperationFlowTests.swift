@@ -204,6 +204,46 @@ final class OperationFlowTests: XCTestCase {
 // MARK: - Production adapter against real (tiny) processes
 
 final class SystemProcessPortTests: XCTestCase {
+    private enum Terminal: Sendable, Equatable {
+        case exited(Int32)
+        case authCancelled
+    }
+
+    private struct Collected: Sendable, Equatable {
+        var lines: [String] = []
+        var terminal: Terminal?
+    }
+
+    private final class LockedBox<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: Value
+
+        init(_ value: Value) { storage = value }
+
+        func withValue<T>(_ body: (inout Value) -> T) -> T {
+            lock.lock(); defer { lock.unlock() }
+            return body(&storage)
+        }
+
+        var value: Value {
+            lock.lock(); defer { lock.unlock() }
+            return storage
+        }
+    }
+
+    private static func collect(_ spec: ProcessSpec,
+                                port: SystemProcessPort = SystemProcessPort()) async -> Collected {
+        var result = Collected()
+        for await event in port.events(spec) {
+            switch event {
+            case .line(let line): result.lines.append(line)
+            case .exited(let code): result.terminal = .exited(code)
+            case .authCancelled: result.terminal = .authCancelled
+            }
+        }
+        return result
+    }
+
     private func run(_ spec: ProcessSpec) async -> (lines: [String], exit: Int32?) {
         var lines: [String] = []
         var exit: Int32?
@@ -215,6 +255,12 @@ final class SystemProcessPortTests: XCTestCase {
             }
         }
         return (lines, exit)
+    }
+
+    private static func elevatedSpec(arguments: [String] = ["clean"],
+                                     timeout: TimeInterval? = nil) -> ProcessSpec {
+        ProcessSpec(executable: "/usr/local/bin/mo", arguments: arguments,
+                    stdin: nil, elevated: true, timeout: timeout)
     }
 
     func testStreamsLinesAndExitCode() async {
@@ -245,6 +291,169 @@ final class SystemProcessPortTests: XCTestCase {
         let r = await run(ProcessSpec(executable: "/nonexistent/binary", arguments: [],
                                       stdin: nil, elevated: false, timeout: nil))
         XCTAssertEqual(r.exit, 127)
+    }
+
+    // MARK: Pathname-free elevated output transport (BUR-89)
+
+    func testElevatedTransport_hostileLegacySymlinkIsNeverOpened() async throws {
+        let fm = FileManager.default
+        let nonce = UUID().uuidString.filter(\.isLetter)
+        let arguments = ["BURHostileSymlink\(nonce)"]
+        let safe = arguments.map { $0.filter(\.isLetter) }.joined(separator: "-")
+        let legacyURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("burrow-op-\(safe).log")
+        let fixtureDir = fm.temporaryDirectory
+            .appendingPathComponent("burrow-bur89-\(UUID().uuidString)")
+        let sentinelURL = fixtureDir.appendingPathComponent("sentinel")
+        try fm.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+        try Data("DO NOT TOUCH".utf8).write(to: sentinelURL)
+        try? fm.removeItem(at: legacyURL)
+        try fm.createSymbolicLink(at: legacyURL, withDestinationURL: sentinelURL)
+        defer {
+            try? fm.removeItem(at: legacyURL)
+            try? fm.removeItem(at: fixtureDir)
+        }
+
+        let script = LockedBox<String?>(nil)
+        let cleanupCount = LockedBox(0)
+        let port = SystemProcessPort(elevatedInvocation: { capture in
+            script.withValue { $0 = capture.source }
+            return SystemProcessPort.Invocation(
+                executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
+                arguments: ["%s", "safe output\n\(capture.exitMarker)0\n"]
+            )
+        }, didCleanup: {
+            cleanupCount.withValue { $0 += 1 }
+        })
+
+        let result = await Self.collect(Self.elevatedSpec(arguments: arguments), port: port)
+
+        XCTAssertEqual(result.lines, ["safe output"])
+        XCTAssertEqual(result.terminal, .exited(0))
+        XCTAssertEqual(String(decoding: try Data(contentsOf: sentinelURL), as: UTF8.self),
+                       "DO NOT TOUCH")
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: legacyURL.path), sentinelURL.path)
+        XCTAssertFalse(try XCTUnwrap(script.value).contains(legacyURL.path))
+        XCTAssertFalse(try XCTUnwrap(script.value).contains("burrow-op-"))
+        XCTAssertEqual(cleanupCount.value, 1)
+    }
+
+    func testElevatedTransport_concurrentIdenticalOperationsHaveIndependentState() async {
+        let markers = LockedBox<[String]>([])
+        let cleanupCount = LockedBox(0)
+        let port = SystemProcessPort(elevatedInvocation: { capture in
+            markers.withValue { $0.append(capture.exitMarker) }
+            return SystemProcessPort.Invocation(
+                executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
+                arguments: ["%s", "run-\(capture.exitMarker)\n\(capture.exitMarker)0\n"]
+            )
+        }, didCleanup: {
+            cleanupCount.withValue { $0 += 1 }
+        })
+
+        let results = await withTaskGroup(of: Collected.self, returning: [Collected].self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    await Self.collect(Self.elevatedSpec(arguments: ["clean", "--dry-run"]),
+                                       port: port)
+                }
+            }
+            var all: [Collected] = []
+            for await result in group { all.append(result) }
+            return all
+        }
+
+        XCTAssertEqual(results.count, 8)
+        XCTAssertTrue(results.allSatisfy { $0.terminal == .exited(0) })
+        XCTAssertEqual(Set(results.compactMap(\.lines.first)).count, 8)
+        XCTAssertEqual(Set(markers.value).count, 8)
+        XCTAssertEqual(cleanupCount.value, 8)
+    }
+
+    func testElevatedTransport_capturesMergedOutputBeforeFailedExit() async throws {
+        let source = LockedBox<String?>(nil)
+        let port = SystemProcessPort(elevatedInvocation: { capture in
+            source.withValue { $0 = capture.source }
+            let envelope = "stdout line\nstderr line\nfinal partial\n\(capture.exitMarker)7\n"
+            return SystemProcessPort.Invocation(
+                executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
+                arguments: ["%s", envelope]
+            )
+        })
+
+        let result = await Self.collect(Self.elevatedSpec(), port: port)
+
+        XCTAssertEqual(result.lines, ["stdout line", "stderr line", "final partial"])
+        XCTAssertEqual(result.terminal, .exited(7),
+                       "all complete lines must precede the ordinary failed exit")
+        XCTAssertTrue(try XCTUnwrap(source.value).contains("2>&1"),
+                      "the root command's stderr is merged without a log pathname")
+    }
+
+    func testElevatedTransport_cleansSuccessFailureTimeoutSpawnFailureAndCancellation() async {
+        let cleaned = LockedBox<[String: Int]>([:])
+        func record(_ name: String) -> @Sendable () -> Void {
+            { cleaned.withValue { $0[name, default: 0] += 1 } }
+        }
+        func envelopePort(name: String, status: Int32) -> SystemProcessPort {
+            SystemProcessPort(elevatedInvocation: { capture in
+                SystemProcessPort.Invocation(
+                    executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
+                    arguments: ["%s", "\(name)\n\(capture.exitMarker)\(status)\n"]
+                )
+            }, didCleanup: record(name))
+        }
+
+        _ = await Self.collect(Self.elevatedSpec(), port: envelopePort(name: "success", status: 0))
+        _ = await Self.collect(Self.elevatedSpec(), port: envelopePort(name: "failure", status: 9))
+
+        let timeoutPort = SystemProcessPort(elevatedInvocation: { _ in
+            SystemProcessPort.Invocation(executableURL: URL(fileURLWithPath: "/bin/sleep"),
+                                         arguments: ["5"])
+        }, didCleanup: record("timeout"))
+        _ = await Self.collect(Self.elevatedSpec(timeout: 0.05), port: timeoutPort)
+
+        let spawnFailurePort = SystemProcessPort(elevatedInvocation: { _ in
+            SystemProcessPort.Invocation(executableURL: URL(fileURLWithPath: "/not/a/binary"),
+                                         arguments: [])
+        }, didCleanup: record("spawnFailure"))
+        _ = await Self.collect(Self.elevatedSpec(), port: spawnFailurePort)
+
+        let cancelPort = SystemProcessPort(elevatedInvocation: { _ in
+            SystemProcessPort.Invocation(executableURL: URL(fileURLWithPath: "/bin/sleep"),
+                                         arguments: ["5"])
+        }, didCleanup: record("cancellation"))
+        let cancelled = Task { await Self.collect(Self.elevatedSpec(), port: cancelPort) }
+        try? await Task<Never, Never>.sleep(nanoseconds: 50_000_000)
+        cancelled.cancel()
+        _ = await cancelled.value
+        for _ in 0..<100 where cleaned.value["cancellation"] == nil {
+            try? await Task<Never, Never>.sleep(nanoseconds: 10_000_000)
+        }
+
+        for name in ["success", "failure", "timeout", "spawnFailure", "cancellation"] {
+            XCTAssertEqual(cleaned.value[name], 1, "\(name) must clean exactly once")
+        }
+    }
+
+    func testElevatedTransport_authorizationCancellationAndRealFailureStayDistinct() async {
+        let authCancelPort = SystemProcessPort(elevatedInvocation: { _ in
+            SystemProcessPort.Invocation(executableURL: URL(fileURLWithPath: "/usr/bin/false"),
+                                         arguments: [])
+        })
+        let cancelled = await Self.collect(Self.elevatedSpec(), port: authCancelPort)
+        XCTAssertEqual(cancelled.lines, [])
+        XCTAssertEqual(cancelled.terminal, .authCancelled)
+
+        let failurePort = SystemProcessPort(elevatedInvocation: { capture in
+            SystemProcessPort.Invocation(
+                executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
+                arguments: ["%s", "command failed\n\(capture.exitMarker)12\n"]
+            )
+        })
+        let failed = await Self.collect(Self.elevatedSpec(), port: failurePort)
+        XCTAssertEqual(failed.lines, ["command failed"])
+        XCTAssertEqual(failed.terminal, .exited(12))
     }
 
     // MARK: Auth-cancel classification — an engine rule, not view folklore

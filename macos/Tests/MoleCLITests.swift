@@ -129,10 +129,45 @@ final class MoleCLITests: XCTestCase {
         XCTAssertTrue(s2.contains(#"'/tmp/a'\\''b/mo'"#))
     }
 
-    func testElevatedScript_redirectsThroughQuotedLogPath() {
-        let s = MoleCLI.elevatedScript(executable: "/usr/local/bin/mo", args: ["clean"],
-                                       redirectTo: "/tmp/my log.txt")
-        XCTAssertTrue(s.contains("> '/tmp/my log.txt' 2>&1"))
+    func testElevatedCaptureScript_mergesOutputWithoutAPathname() {
+        let capture = MoleCLI.elevatedCaptureScript(
+            executable: "/usr/local/bin/mo", args: ["clean"], exitMarker: "BURROW_TEST_EXIT="
+        )
+        XCTAssertTrue(capture.source.contains("'/usr/local/bin/mo' 'clean' 2>&1"))
+        XCTAssertTrue(capture.source.hasSuffix(
+            "with administrator privileges without altering line endings"
+        ))
+        XCTAssertFalse(capture.source.contains("/tmp/"))
+        XCTAssertFalse(capture.source.contains("burrow-op-"))
+    }
+
+    func testElevatedCaptureScript_preservesBothQuotingLayers() {
+        let capture = MoleCLI.elevatedCaptureScript(
+            executable: "/tmp/a'b/$(mo)", args: ["a;b", #"he said "hi""#],
+            exitMarker: "BURROW_TEST_EXIT="
+        )
+        XCTAssertTrue(capture.source.contains(#"'/tmp/a'\\''b/$(mo)' 'a;b' 'he said \"hi\"'"#))
+    }
+
+    func testElevatedCaptureScript_decodesCompleteOutputAndExitStatus() throws {
+        let capture = MoleCLI.elevatedCaptureScript(
+            executable: "/usr/local/bin/mo", args: ["clean"], exitMarker: "BURROW_TEST_EXIT="
+        )
+        let decoded = try XCTUnwrap(capture.decode(Data(
+            "stdout line\nstderr line\nfinal partial\nBURROW_TEST_EXIT=9\n".utf8
+        )))
+        XCTAssertEqual(decoded.output, "stdout line\nstderr line\nfinal partial")
+        XCTAssertEqual(decoded.exitCode, 9)
+
+        let silent = try XCTUnwrap(capture.decode(Data("\nBURROW_TEST_EXIT=0\n".utf8)))
+        XCTAssertEqual(silent.output, "")
+        XCTAssertEqual(silent.exitCode, 0)
+    }
+
+    func testElevatedCaptureScript_usesUniquePerRunMarkers() {
+        let first = MoleCLI.elevatedCaptureScript(executable: "/bin/echo", args: [])
+        let second = MoleCLI.elevatedCaptureScript(executable: "/bin/echo", args: [])
+        XCTAssertNotEqual(first.exitMarker, second.exitMarker)
     }
 
     /// The invariant: an elevated run resolves its binary from the app bundle
