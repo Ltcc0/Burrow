@@ -427,6 +427,15 @@ struct SystemProcessPort: ProcessPort {
             t.standardOutput = outPipe
             t.standardError = errPipe
 
+            // Process termination is one completion signal beside the two
+            // pipe drains. Do not call `waitUntilExit()` after EOF: Xcode 27's
+            // Foundation can strand that blocking wait when a process exits
+            // very quickly. Waiting on all three group entries preserves the
+            // same ordering guarantee without blocking a queue on Process.
+            let completion = DispatchGroup()
+            completion.enter()
+            t.terminationHandler = { _ in completion.leave() }
+
             cont.onTermination = { @Sendable _ in
                 if t.isRunning { t.terminate() }
             }
@@ -454,10 +463,9 @@ struct SystemProcessPort: ProcessPort {
                 // successful spawn (so a failed launch can't leak them). Both
                 // pipes reach EOF before the terminal event; this keeps final
                 // line ordering deterministic for plain and elevated runs.
-                let group = DispatchGroup()
                 for (index, fh) in [outPipe.fileHandleForReading,
                                     errPipe.fileHandleForReading].enumerated() {
-                    group.enter()
+                    completion.enter()
                     DispatchQueue.global(qos: .utility).async {
                         if spec.elevated {
                             let data = fh.readDataToEndOfFile()
@@ -467,11 +475,10 @@ struct SystemProcessPort: ProcessPort {
                                 if let s = String(data: d, encoding: .utf8) { streamQ.sync { emit(s) } }
                             }
                         }
-                        group.leave()
+                        completion.leave()
                     }
                 }
-                group.notify(queue: streamQ) {
-                    t.waitUntilExit()
+                completion.notify(queue: streamQ) {
                     resources.cleanup()
                     if let captureScript,
                        let decoded = captureScript.decode(elevatedPipes.stdout) {

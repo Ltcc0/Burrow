@@ -271,6 +271,25 @@ final class SystemProcessPortTests: XCTestCase {
         XCTAssertEqual(r.exit, 3)
     }
 
+    func testRapidNonzeroExitDoesNotStrandTerminalEvent() async {
+        // Xcode 27 exposed a Process race when pipe EOF was followed by a
+        // blocking waitUntilExit(): a short-lived shell could leave the
+        // stream open forever even though both output handles had drained.
+        // Repetition keeps the timing-sensitive lifecycle covered without
+        // changing the live-stream contract.
+        for index in 0..<16 {
+            let r = await run(ProcessSpec(
+                executable: "/bin/sh",
+                arguments: ["-c", "printf 'run-\(index)\\n'; exit 3"],
+                stdin: nil,
+                elevated: false,
+                timeout: nil
+            ))
+            XCTAssertEqual(r.lines, ["run-\(index)"])
+            XCTAssertEqual(r.exit, 3)
+        }
+    }
+
     func testStdinIsFedAndClosed() async {
         let r = await run(ProcessSpec(executable: "/bin/cat", arguments: [],
                                       stdin: "hello\n", elevated: false, timeout: nil))
